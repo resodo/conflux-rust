@@ -263,6 +263,8 @@ class ConfluxEthReplayTest(ConfluxTestFramework):
 
         end_time = datetime.datetime.now()
         time_used = (end_time - start_time).total_seconds()
+        self.log.info("Transaction per second: %f", tx_count / time_used)
+        time.sleep(60)
         for block_gen_thread in block_gen_threads:
             block_gen_thread.stop()
         for block_gen_thread in block_gen_threads:
@@ -271,7 +273,6 @@ class ConfluxEthReplayTest(ConfluxTestFramework):
             "100%% Ethereum Transactions completely replayed. Time used: %f seconds",
             time_used,
         )
-        self.log.info("Transaction per second: %f", tx_count / time_used)
 
         # time.sleep(2000000)
 
