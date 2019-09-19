@@ -35,6 +35,8 @@ lazy_static! {
         GaugeUsize::register_with_group("txpool", "unexecuted_size");
     static ref TX_POOL_TOTAL_PACKED_SIZE: Arc<dyn Gauge<usize>> =
         GaugeUsize::register_with_group("txpool", "total_packed_size");
+    static ref TX_POOL_TOTAL_RECEIVED_SIZE: Arc<dyn Gauge<usize>> =
+        GaugeUsize::register_with_group("txpool", "total_received_size");
     static ref TX_POOL_READY_GAUGE: Arc<dyn Gauge<usize>> =
         GaugeUsize::register_with_group("txpool", "ready_size");
     static ref TX_POOL_INSERT_TIMER: Arc<dyn Meter> =
@@ -162,6 +164,7 @@ impl TransactionPool {
         }
         TX_POOL_GAUGE.update(self.total_unpacked());
         TX_POOL_TOTAL_PACKED_SIZE.update(self.total_packed());
+        TX_POOL_TOTAL_RECEIVED_SIZE.update(self.total_received());
         TX_POOL_READY_GAUGE.update(self.inner.read().total_ready_accounts());
 
         if self.verification_config.eth_compatibility_mode && failure.len() != 0
