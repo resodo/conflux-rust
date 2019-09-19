@@ -5,6 +5,7 @@ import math
 import numpy
 from eth_utils import decode_hex
 
+from test_framework.blocktools import create_transaction
 from test_framework.mininode import *
 from test_framework.test_framework import ConfluxTestFramework
 from test_framework.util import *
@@ -60,6 +61,7 @@ class ConfluxEthReplayTest(ConfluxTestFramework):
     # For eth replay
     EXPECTED_TX_SIZE_PER_SEC = 800000
     INITIALIZE_TXS = 200000 + 400 + 400
+    INITIAL_SLEEP = 60
     GENESIS_KEY = decode_hex(
         "9a6d3ba2b0c7514b16a006ee605055d71b9edfad183aeb2d9790e9d4ccced471"
     )
@@ -157,6 +159,22 @@ class ConfluxEthReplayTest(ConfluxTestFramework):
         # Start mininode connection
         start_p2p_connection(self.nodes, self.remote, self.local_ip)
 
+        tx_file_path = (
+            self.TX_FILE
+        )
+        f = open(tx_file_path, "rb")
+
+        init_txs = []
+        for nonce in range(0, self.num_nodes):
+            i = nonce
+            addr = self.nodes[i].addr
+            init_tx = create_transaction(
+                pri_key=ConfluxEthReplayTest.GENESIS_KEY,
+                value=10000000000000000, receiver=addr, nonce=nonce)
+            init_txs.append(init_tx)
+
+        self.nodes[0].p2p.send_protocol_msg(Transactions(transactions=init_txs))
+
         block_gen_threads = []
         node_id = 0
         for node in self.nodes:
@@ -167,11 +185,9 @@ class ConfluxEthReplayTest(ConfluxTestFramework):
             block_gen_thread.start()
             node_id += 1
 
-        tx_file_path = (
-            self.TX_FILE
-        )
-        f = open(tx_file_path, "rb")
+        time.sleep(self.INITIAL_SLEEP)
 
+        self.log.info("Experiment started")
         start_time = datetime.datetime.now()
         last_log_elapsed_time = 0
         tx_batch_size = 1000
@@ -282,8 +298,8 @@ class BlockGenThread(threading.Thread):
     BLOCK_TX_LIMIT = 10000
     BLOCK_SIZE_LIMIT = 800000
     # Seems to be 90bytes + artificial 128b
-    # SIMPLE_TX_PER_BLOCK = 700
-    SIMPLE_TX_PER_BLOCK = 0
+    SIMPLE_TX_PER_BLOCK = 700
+    # SIMPLE_TX_PER_BLOCK = 0
     # Seems to be 90 + 64 bytes.
     # ERC20_TX_PER_BLOCK = 50
     ERC20_TX_PER_BLOCK = 0
@@ -361,6 +377,8 @@ class BlockGenThread(threading.Thread):
                 simple_tx_count = math.ceil(
                     BlockGenThread.SIMPLE_TX_PER_BLOCK * generate_factor
                 )
+                if elapsed_sec < ConfluxEthReplayTest.INITIAL_SLEEP:
+                    simple_tx_count = 0
                 erc20_tx_count = math.ceil(
                     BlockGenThread.ERC20_TX_PER_BLOCK * generate_factor
                 )
