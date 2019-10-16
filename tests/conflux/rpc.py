@@ -120,6 +120,12 @@ class RpcClient:
         assert_is_hash_string(block_hash)
         return block_hash
 
+    def generate_block_with_fake_txs(self, txs: list, tx_data_len: int = 0) -> str:
+        encoded_txs = eth_utils.encode_hex(rlp.encode(txs))
+        block_hash = self.node.test_generateblockwithfaketxs(encoded_txs, tx_data_len)
+        assert_is_hash_string(block_hash)
+        return block_hash
+
     def get_logs(self, filter: Filter) -> list:
         logs = self.node.cfx_getLogs(filter.__dict__)
         return logs
@@ -145,9 +151,12 @@ class RpcClient:
         else:
             return int(self.node.cfx_getBalance(addr, epoch), 0)
 
-    def get_nonce(self, addr: str, epoch: str = None) -> int:
-        if epoch is None:
+    ''' Ignore block_hash if epoch is not None '''
+    def get_nonce(self, addr: str, epoch: str = None, block_hash: str = None) -> int:
+        if epoch is None and block_hash is None:
             return int(self.node.cfx_getTransactionCount(addr), 0)
+        elif epoch is None:
+            return int(self.node.cfx_getTransactionCount(addr, "hash:"+block_hash), 0)
         else:
             return int(self.node.cfx_getTransactionCount(addr, epoch), 0)
 
@@ -168,11 +177,8 @@ class RpcClient:
 
         return tx_hash
 
-    def send_usable_genesis_accounts(self, addresses: list, secrets: list):
-        self.node.cfx_sendUsableGenesisAccounts(
-            eth_utils.encode_hex(rlp.encode(addresses)),
-            eth_utils.encode_hex(rlp.encode(secrets)),
-        )
+    def send_usable_genesis_accounts(self, account_start_index:int):
+        self.node.test_sendUsableGenesisAccounts(account_start_index)
 
     def wait_for_receipt(
         self, tx_hash: str, num_txs=1, timeout=10, state_before_wait=True
@@ -287,6 +293,7 @@ class RpcClient:
         return self.node.gettransactionreceipt(tx_hash)
 
     def get_transaction_receipt(self, tx_hash: str) -> dict:
+        assert_is_hash_string(tx_hash)
         return self.node.cfx_getTransactionReceipt(tx_hash)
 
     def txpool_status(self) -> (int, int):

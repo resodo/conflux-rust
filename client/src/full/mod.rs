@@ -8,18 +8,6 @@ use super::{
 pub use crate::configuration::Configuration;
 use blockgen::BlockGenerator;
 
-use cfxcore::{
-    genesis,
-    state_exposer::{SharedStateExposer, StateExposer},
-    statistics::Statistics,
-    storage::StorageManager,
-    sync::SyncPhaseType,
-    transaction_pool::DEFAULT_MAX_BLOCK_GAS_LIMIT,
-    vm_factory::VmFactory,
-    ConsensusGraph, LightProvider, SynchronizationGraph,
-    SynchronizationService, TransactionPool, WORKER_COMPUTATION_PARALLELISM,
-};
-
 use crate::rpc::{
     extractor::RpcExtractor,
     impls::{
@@ -28,10 +16,16 @@ use crate::rpc::{
     setup_debug_rpc_apis, setup_public_rpc_apis,
 };
 use cfx_types::{Address, U256};
-use cfxcore::block_data_manager::BlockDataManager;
+use cfxcore::{
+    block_data_manager::BlockDataManager, genesis, statistics::Statistics,
+    storage::StorageManager, sync::SyncPhaseType,
+    transaction_pool::DEFAULT_MAX_BLOCK_GAS_LIMIT, vm_factory::VmFactory,
+    ConsensusGraph, LightProvider, SynchronizationGraph,
+    SynchronizationService, TransactionPool, WORKER_COMPUTATION_PARALLELISM,
+};
 use ctrlc::CtrlC;
 use db::SystemDB;
-use keylib::public_to_address;
+use ethkey::public_to_address;
 use network::NetworkService;
 use parking_lot::{Condvar, Mutex};
 use runtime::Runtime;
@@ -95,16 +89,7 @@ impl FullClient {
     ) -> Result<FullClientHandle, String> {
         info!("Working directory: {:?}", std::env::current_dir());
 
-        if conf.raw_conf.metrics_enabled {
-            metrics::enable();
-            let reporter = metrics::FileReporter::new(
-                conf.raw_conf.metrics_output_file.clone(),
-            );
-            metrics::report_async(
-                reporter,
-                Duration::from_millis(conf.raw_conf.metrics_report_interval_ms),
-            );
-        }
+        metrics::initialize(conf.metrics_config());
 
         let worker_thread_pool = Arc::new(Mutex::new(ThreadPool::with_name(
             "Tx Recover".into(),
@@ -148,15 +133,18 @@ impl FullClient {
         }
 
         let genesis_accounts = if conf.raw_conf.test_mode {
-            match conf.raw_conf.genesis_accounts {
+            match conf.raw_conf.genesis_secrets {
                 Some(ref file) => {
                     genesis::default(secret_store.as_ref());
-                    genesis::load_file(file)?
+                    genesis::load_secrets_file(file, secret_store.as_ref())?
                 }
                 None => genesis::default(secret_store.as_ref()),
             }
         } else {
-            genesis::default(secret_store.as_ref())
+            match conf.raw_conf.genesis_accounts {
+                Some(ref file) => genesis::load_file(file)?,
+                None => genesis::default(secret_store.as_ref()),
+            }
         };
 
         // FIXME: move genesis block to a dedicated directory near all conflux
@@ -164,7 +152,7 @@ impl FullClient {
         let genesis_block = storage_manager.initialize(
             genesis_accounts,
             DEFAULT_MAX_BLOCK_GAS_LIMIT.into(),
-            TESTNET_VERSION.into(),
+            Address::from_str(TESTNET_VERSION).unwrap(),
             U256::zero(),
         );
         debug!("Initialize genesis_block={:?}", genesis_block);
@@ -186,7 +174,6 @@ impl FullClient {
         ));
 
         let statistics = Arc::new(Statistics::new());
-        let state_exposer = SharedStateExposer::new(StateExposer::new());
 
         let vm = VmFactory::new(1024 * 32);
         let pow_config = conf.pow_config();
@@ -202,11 +189,14 @@ impl FullClient {
         ));
 
         let protocol_config = conf.protocol_config();
+        let verification_config = conf.verification_config();
+        let sync_config = conf.sync_graph_config();
 
         let sync_graph = Arc::new(SynchronizationGraph::new(
             consensus.clone(),
             verification_config,
             pow_config.clone(),
+            sync_config,
             true,
         ));
 
@@ -287,12 +277,12 @@ impl FullClient {
         let txgen_handle = if tx_conf.generate_tx {
             let txgen_clone = txgen.clone();
             let t = if conf.raw_conf.test_mode {
-                match conf.raw_conf.genesis_accounts {
+                match conf.raw_conf.genesis_secrets {
                     Some(ref _file) => {
                         thread::Builder::new()
                             .name("txgen".into())
                             .spawn(move || {
-                                TransactionGenerator::generate_transactions_with_mutiple_genesis_accounts(
+                                TransactionGenerator::generate_transactions_with_multiple_genesis_accounts(
                                     txgen_clone,
                                     tx_conf,
                                 )
@@ -343,7 +333,6 @@ impl FullClient {
             consensus.clone(),
             network.clone(),
             txpool.clone(),
-            state_exposer.clone(),
         ));
 
         let runtime = Runtime::with_default_thread_count();

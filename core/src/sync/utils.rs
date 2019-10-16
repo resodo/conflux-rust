@@ -7,16 +7,16 @@ use crate::{
         consensus::ERA_DEFAULT_CHECKPOINT_GAP, WORKER_COMPUTATION_PARALLELISM,
     },
     pow::ProofOfWorkConfig,
-    state_exposer::{SharedStateExposer, StateExposer},
     statistics::Statistics,
     storage::{state_manager::StorageConfiguration, StorageManager},
-    sync::SynchronizationGraph,
+    sync::{SyncGraphConfig, SynchronizationGraph},
     transaction_pool::DEFAULT_MAX_BLOCK_GAS_LIMIT,
     verification::VerificationConfig,
     vm_factory::VmFactory,
     ConsensusGraph, TransactionPool,
 };
-use cfx_types::{H256, U256};
+use cfx_types::{Address, H256, U256};
+use core::str::FromStr;
 use parking_lot::Mutex;
 use primitives::{Block, BlockHeaderBuilder};
 use std::{collections::HashMap, path::Path, sync::Arc};
@@ -83,6 +83,7 @@ pub fn initialize_synchronization_graph(
             Some(128),
             db::DatabaseCompactionProfile::default(),
             NUM_COLUMNS,
+            false,
         ),
     )
     .map_err(|e| format!("Failed to open database {:?}", e))
@@ -100,14 +101,14 @@ pub fn initialize_synchronization_graph(
 
     let mut genesis_accounts = HashMap::new();
     genesis_accounts.insert(
-        "0000000000000000000000000000000000000008".into(),
+        Address::from_str("0000000000000000000000000000000000000008").unwrap(),
         U256::from(0),
     );
 
     let genesis_block = Arc::new(storage_manager.initialize(
         genesis_accounts,
         DEFAULT_MAX_BLOCK_GAS_LIMIT.into(),
-        "0000000000000000000000000000000000000008".into(),
+        Address::from_str("0000000000000000000000000000000000000008").unwrap(),
         U256::from(10),
     ));
 
@@ -134,7 +135,6 @@ pub fn initialize_synchronization_graph(
         verification_config,
     ));
     let statistics = Arc::new(Statistics::new());
-    let state_exposer = SharedStateExposer::new(StateExposer::new());
 
     let vm = VmFactory::new(1024 * 32);
     let pow_config = ProofOfWorkConfig::new(
@@ -145,6 +145,9 @@ pub fn initialize_synchronization_graph(
         0,                /* stratum_port */
         None,             /* stratum_secret */
     );
+    let sync_config = SyncGraphConfig {
+        enable_state_expose: false,
+    };
     let consensus = Arc::new(ConsensusGraph::new(
         ConsensusConfig {
             debug_dump_dir_invalid_state_root: "./invalid_state_root/"
@@ -157,6 +160,7 @@ pub fn initialize_synchronization_graph(
                 era_epoch_count,
                 era_checkpoint_gap: ERA_DEFAULT_CHECKPOINT_GAP,
                 enable_optimistic_execution: false,
+                enable_state_expose: false,
             },
             bench_mode: true, /* Set bench_mode to true so that we skip
                                * execution */
@@ -175,6 +179,7 @@ pub fn initialize_synchronization_graph(
         consensus.clone(),
         verification_config,
         pow_config,
+        sync_config,
         false,
     ));
 

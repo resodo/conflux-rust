@@ -7,6 +7,8 @@ use crate::{
     block_data_manager::BlockDataManager,
     consensus::ConsensusGraphInner,
     executive::{ExecutionError, Executive},
+    machine::new_machine_with_builtin,
+    parameters::{consensus::*, consensus_internal::*},
     state::{CleanupMode, State},
     statedb::StateDb,
     storage::{
@@ -17,7 +19,11 @@ use crate::{
     vm_factory::VmFactory,
     SharedTransactionPool,
 };
-use cfx_types::{into_u256, H256, KECCAK_EMPTY_BLOOM, U256, U512};
+use cfx_types::{BigEndianHash, H256, KECCAK_EMPTY_BLOOM, U256, U512};
+use core::convert::TryFrom;
+use hash::KECCAK_EMPTY_LIST_RLP;
+use metrics::{register_meter_with_group, Meter, MeterTimer};
+use parity_bytes::ToPretty;
 use parking_lot::{Mutex, RwLock};
 use primitives::{
     receipt::{
@@ -29,24 +35,15 @@ use primitives::{
     TransactionAddress,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    convert::From,
+    fmt::{Debug, Formatter},
     sync::{
+        atomic::{AtomicBool, Ordering::Relaxed},
         mpsc::{channel, RecvError, Sender, TryRecvError},
         Arc,
     },
     thread::{self, JoinHandle},
-};
-
-use crate::{
-    machine::new_machine_with_builtin,
-    parameters::{consensus::*, consensus_internal::*},
-};
-use hash::KECCAK_EMPTY_LIST_RLP;
-use metrics::{register_meter_with_group, Meter, MeterTimer};
-use std::{
-    collections::HashSet,
-    fmt::{Debug, Formatter},
-    sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 
 lazy_static! {
@@ -198,7 +195,7 @@ impl ConsensusExecutor {
                         let maybe_optimistic_task = consensus_inner
                             .try_write()
                             .and_then(|mut inner|
-                                executor_thread.get_optimistic_execution_task(data_man.as_ref(), &mut *inner)
+                                executor_thread.get_optimistic_execution_task(&mut *inner)
                             );
                         match maybe_optimistic_task {
                             Some(task) => {
@@ -276,7 +273,7 @@ impl ConsensusExecutor {
     }
 
     fn get_optimistic_execution_task(
-        &self, data_man: &BlockDataManager, inner: &mut ConsensusGraphInner,
+        &self, inner: &mut ConsensusGraphInner,
     ) -> Option<EpochExecutionTask> {
         if !inner.inner_conf.enable_optimistic_execution {
             return None;
@@ -292,7 +289,7 @@ impl ConsensusExecutor {
             inner.arena[epoch_arena_index].hash,
             inner.get_epoch_block_hashes(epoch_arena_index),
             inner.get_epoch_start_block_number(epoch_arena_index),
-            self.get_reward_execution_info(data_man, inner, epoch_arena_index),
+            self.get_reward_execution_info(inner, epoch_arena_index),
             true,
             false,
         );
@@ -308,7 +305,7 @@ impl ConsensusExecutor {
     }
 
     pub fn get_reward_execution_info_from_index(
-        &self, data_man: &BlockDataManager, inner: &mut ConsensusGraphInner,
+        &self, inner: &mut ConsensusGraphInner,
         reward_index: Option<(usize, usize)>,
     ) -> Option<RewardExecutionInfo>
     {
@@ -324,8 +321,8 @@ impl ConsensusExecutor {
                     .unwrap();
                 }
 
-                let epoch_blocks = inner
-                    .get_executable_epoch_blocks(data_man, pivot_arena_index);
+                let epoch_blocks =
+                    inner.get_executable_epoch_blocks(pivot_arena_index);
 
                 let mut epoch_block_no_reward =
                     Vec::with_capacity(epoch_blocks.len());
@@ -364,7 +361,6 @@ impl ConsensusExecutor {
                                 .data
                                 .partial_invalid
                                 || !inner.compute_vote_valid_for_pivot_block(
-                                    data_man,
                                     *index,
                                     pivot_arena_index,
                                 );
@@ -380,7 +376,7 @@ impl ConsensusExecutor {
                         if block_consensus_node_anticone_opt.is_none()
                             || anticone_cutoff_epoch_anticone_set_opt.is_none()
                         {
-                            anticone_difficulty = U512::from(into_u256(
+                            anticone_difficulty = U512::from(U256::from(
                                 inner.recompute_anticone_weight(
                                     *index,
                                     anticone_penalty_cutoff_epoch_arena_index,
@@ -418,7 +414,7 @@ impl ConsensusExecutor {
                                 // TODO: Maybe consider to use base difficulty
                                 // Check with the spec!
                                 anticone_difficulty +=
-                                    U512::from(into_u256(inner.block_weight(
+                                    U512::from(U256::from(inner.block_weight(
                                         a_index, false, /* inclusive */
                                     )));
                             }
@@ -449,67 +445,21 @@ impl ConsensusExecutor {
     }
 
     pub fn get_reward_execution_info(
-        &self, data_man: &BlockDataManager, inner: &mut ConsensusGraphInner,
-        epoch_arena_index: usize,
-    ) -> Option<RewardExecutionInfo>
-    {
+        &self, inner: &mut ConsensusGraphInner, epoch_arena_index: usize,
+    ) -> Option<RewardExecutionInfo> {
         self.get_reward_execution_info_from_index(
-            data_man,
             inner,
             inner.get_pivot_reward_index(epoch_arena_index),
         )
     }
 
-    fn collect_blocks_missing_execution_info(
-        &self, me: usize, inner: &ConsensusGraphInner,
-    ) -> Result<Vec<(H256, H256)>, String> {
-        let mut cur = me;
-        let mut waiting_blocks = Vec::new();
-        while !inner.execution_info_cache.contains_key(&cur) {
-            let cur_hash = inner.arena[cur].hash.clone();
-            let state_hash = inner
-                .get_state_block_with_delay(
-                    &cur_hash,
-                    DEFERRED_STATE_EPOCH_COUNT as usize,
-                )?
-                .clone();
-            waiting_blocks.push((cur_hash, state_hash));
-            if cur == inner.cur_era_genesis_block_arena_index {
-                break;
-            }
-            cur = inner.arena[cur].parent;
-        }
-        waiting_blocks.reverse();
-        Ok(waiting_blocks)
-    }
-
-    fn compute_execution_info_for_blocks(
-        &self, waiting_result: Vec<(H256, (StateRootWithAuxInfo, H256, H256))>,
-        inner: &mut ConsensusGraphInner,
-    ) -> Result<(), String>
-    {
-        for (cur_hash, result) in waiting_result {
-            let index_opt = inner.hash_to_arena_indices.get(&cur_hash);
-            if index_opt.is_none() {
-                return Err("Too old parent/subtree to prepare for generation"
-                    .to_owned());
-            }
-            let index = *index_opt.unwrap();
-            inner.compute_execution_info_with_result(index, result)?;
-        }
-        Ok(())
-    }
-
     fn wait_and_compute_execution_info(
         &self, me: usize, inner_lock: &RwLock<ConsensusGraphInner>,
     ) -> Result<(), String> {
-        let waiting_blocks;
-        {
-            let inner = &*inner_lock.read();
-            // We go up and find all states whose execution_infos are missing
-            waiting_blocks =
-                self.collect_blocks_missing_execution_info(me, inner)?;
-        }
+        // We go up and find all states whose execution_infos are missing
+        let waiting_blocks = inner_lock
+            .read()
+            .collect_blocks_missing_execution_info(me)?;
         // Now we wait without holding the inner lock
         // Note that we must use hash instead of index because once we release
         // the lock, there might be a checkpoint coming in to break
@@ -523,20 +473,17 @@ impl ConsensusExecutor {
         }
         // Now we need to wait for the execution information of all missing
         // blocks to come back
-        {
-            let inner = &mut *inner_lock.write();
-            self.compute_execution_info_for_blocks(waiting_result, inner)?;
-            Ok(())
-        }
+        inner_lock
+            .write()
+            .compute_execution_info_for_blocks(waiting_result)?;
+        Ok(())
     }
 
     fn wait_and_compute_execution_info_locked(
         &self, me: usize, inner: &mut ConsensusGraphInner,
     ) -> Result<(), String> {
-        let waiting_blocks;
         // We go up and find all states whose execution_infos are missing
-        waiting_blocks =
-            self.collect_blocks_missing_execution_info(me, inner)?;
+        let waiting_blocks = inner.collect_blocks_missing_execution_info(me)?;
         trace!(
             "wait_and_compute_execution_info_locked: waiting_blocks={:?}",
             waiting_blocks
@@ -552,7 +499,7 @@ impl ConsensusExecutor {
         );
         // Now we need to wait for the execution information of all missing
         // blocks to come back
-        self.compute_execution_info_for_blocks(waiting_result, inner)?;
+        inner.compute_execution_info_for_blocks(waiting_result)?;
         Ok(())
     }
 
@@ -753,11 +700,8 @@ impl ConsensusExecutor {
             while last_state_height <= fork_height {
                 let epoch_arena_index =
                     inner.get_pivot_block_arena_index(last_state_height);
-                let reward_execution_info = self.get_reward_execution_info(
-                    &self.handler.data_man,
-                    inner,
-                    epoch_arena_index,
-                );
+                let reward_execution_info =
+                    self.get_reward_execution_info(inner, epoch_arena_index);
                 self.enqueue_epoch(EpochExecutionTask::new(
                     inner.arena[epoch_arena_index].hash,
                     inner.get_epoch_block_hashes(epoch_arena_index),
@@ -774,12 +718,8 @@ impl ConsensusExecutor {
             let epoch_arena_index = chain[fork_chain_index];
             let reward_index = inner.get_pivot_reward_index(epoch_arena_index);
 
-            let reward_execution_info = self
-                .get_reward_execution_info_from_index(
-                    &self.handler.data_man,
-                    inner,
-                    reward_index,
-                );
+            let reward_execution_info =
+                self.get_reward_execution_info_from_index(inner, reward_index);
             self.enqueue_epoch(EpochExecutionTask::new(
                 inner.arena[epoch_arena_index].hash,
                 inner.get_epoch_block_hashes(epoch_arena_index),
@@ -1197,7 +1137,7 @@ impl ConsensusExecutionHandler {
                     debug_out.block_rewards.push(BlockHashAuthorValue(
                         block.hash(),
                         block.block_header.author().clone(),
-                        U256::from(reward),
+                        U256::try_from(reward).unwrap(),
                     ));
                 }
 
@@ -1222,7 +1162,7 @@ impl ConsensusExecutionHandler {
                             BlockHashAuthorValue(
                                 block.hash(),
                                 block.block_header.author().clone(),
-                                U256::from(anticone_penalty),
+                                U256::try_from(anticone_penalty).unwrap(),
                             ),
                         );
                         //
@@ -1236,7 +1176,7 @@ impl ConsensusExecutionHandler {
                 }
 
                 debug_assert!(reward <= U512::from(U256::max_value()));
-                epoch_block_total_rewards.push(U256::from(reward));
+                epoch_block_total_rewards.push(U256::try_from(reward).unwrap());
             }
         }
 
@@ -1373,8 +1313,11 @@ impl ConsensusExecutionHandler {
                     .push(AuthorValue(address, reward));
                 debug_out.state_ops.push(StateOp::OpNameKeyMaybeValue {
                     op_name: "add_balance".to_string(),
-                    key: address.hex().as_bytes().to_vec(),
-                    maybe_value: Some(reward.to_hex().as_bytes().to_vec()),
+                    key: address.to_hex().as_bytes().to_vec(),
+                    maybe_value: Some({
+                        let h: H256 = BigEndianHash::from_uint(&reward);
+                        h.to_hex().as_bytes().to_vec()
+                    }),
                 });
             }
         }
@@ -1453,7 +1396,7 @@ impl ConsensusExecutionHandler {
         };
         let mut ex = Executive::new(&mut state, &env, &machine, &spec);
         let mut nonce_increased = false;
-        let r = ex.transact(
+        let r = ex.transact_virtual(
             tx,
             &mut nonce_increased,
             false, /* eth_compatibility_mode */

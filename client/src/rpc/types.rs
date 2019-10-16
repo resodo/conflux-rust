@@ -7,6 +7,7 @@ mod blame_info;
 mod block;
 mod bytes;
 mod call_request;
+mod consensus_graph_states;
 mod epoch_number;
 mod filter;
 mod hash;
@@ -15,6 +16,7 @@ mod log;
 mod provenance;
 mod receipt;
 mod status;
+mod sync_graph_states;
 mod transaction;
 mod uint;
 
@@ -25,8 +27,9 @@ pub use self::{
     blame_info::BlameInfo,
     block::{Block, BlockTransactions, Header},
     bytes::Bytes,
-    call_request::CallRequest,
-    epoch_number::EpochNumber,
+    call_request::{sign_call, CallRequest},
+    consensus_graph_states::ConsensusGraphStates,
+    epoch_number::{BlockHashOrEpochNumber, EpochNumber},
     filter::Filter,
     hash::{H160, H2048, H256, H512, H64},
     index::Index,
@@ -34,6 +37,7 @@ pub use self::{
     provenance::Origin,
     receipt::Receipt,
     status::Status,
-    transaction::Transaction,
+    sync_graph_states::SyncGraphStates,
+    transaction::{SendTxRequest, Transaction},
     uint::{U128, U256, U64},
 };

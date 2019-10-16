@@ -27,13 +27,14 @@ fn open_db(db_path: &str) -> std::io::Result<Arc<db::SystemDB>> {
         None,
         db::DatabaseCompactionProfile::default(),
         cfxcore::db::NUM_COLUMNS,
+        false,
     );
 
     db::open_database(db_path, &db_config)
 }
 
 fn retrieve_block(db: &Arc<db::SystemDB>, hash: &H256) -> Option<Block> {
-    let block = db.key_value().get(cfxcore::db::COL_BLOCKS, hash).expect(
+    let block = db.key_value().get(cfxcore::db::COL_BLOCKS, hash.as_bytes()).expect(
         "Low level database error when fetching block. Some issue with disk?",
     )?;
 

@@ -12,23 +12,19 @@ use jsonrpc_core::{Error as RpcError, Result as RpcResult};
 use parking_lot::{Condvar, Mutex};
 
 use cfx_types::H256;
-use cfxcore::{
-    state_exposer::SharedStateExposer, PeerInfo, SharedConsensusGraph,
-    SharedTransactionPool,
-};
+use cfxcore::{PeerInfo, SharedConsensusGraph, SharedTransactionPool};
 use primitives::{Action, SignedTransaction};
 
 use network::{
-    get_high_priority_packets,
     node_table::{Node, NodeEndpoint, NodeEntry, NodeId},
     throttling::{self, THROTTLING_SERVICE},
     NetworkService, SessionDetails, UpdateNodeOperation,
 };
 
 use crate::rpc::types::{
-    Block as RpcBlock, EpochNumber, Receipt as RpcReceipt, Status as RpcStatus,
-    Transaction as RpcTransaction, H160 as RpcH160, H256 as RpcH256,
-    U256 as RpcU256, U64 as RpcU64,
+    Block as RpcBlock, BlockHashOrEpochNumber, EpochNumber,
+    Receipt as RpcReceipt, Status as RpcStatus, Transaction as RpcTransaction,
+    H160 as RpcH160, H256 as RpcH256, U256 as RpcU256, U64 as RpcU64,
 };
 
 fn grouped_txs<T, F>(
@@ -58,14 +54,12 @@ pub struct RpcImpl {
     consensus: SharedConsensusGraph,
     network: Arc<NetworkService>,
     tx_pool: SharedTransactionPool,
-    state_exposer: SharedStateExposer,
 }
 
 impl RpcImpl {
     pub fn new(
         exit: Arc<(Mutex<bool>, Condvar)>, consensus: SharedConsensusGraph,
         network: Arc<NetworkService>, tx_pool: SharedTransactionPool,
-        state_exposer: SharedStateExposer,
     ) -> Self
     {
         RpcImpl {
@@ -73,7 +67,6 @@ impl RpcImpl {
             consensus,
             network,
             tx_pool,
-            state_exposer,
         }
     }
 }
@@ -82,12 +75,7 @@ impl RpcImpl {
 impl RpcImpl {
     pub fn best_block_hash(&self) -> RpcResult<RpcH256> {
         info!("RPC Request: cfx_getBestBlockHash()");
-        Ok(self
-            .state_exposer
-            .read()
-            .consensus_graph
-            .best_block_hash
-            .into())
+        Ok(self.consensus.best_block_hash().into())
     }
 
     pub fn gas_price(&self) -> RpcResult<RpcU256> {
@@ -196,9 +184,11 @@ impl RpcImpl {
     }
 
     pub fn transaction_count(
-        &self, address: RpcH160, num: Option<EpochNumber>,
+        &self, address: RpcH160, num: Option<BlockHashOrEpochNumber>,
     ) -> RpcResult<RpcU256> {
-        let num = num.unwrap_or(EpochNumber::LatestState);
+        let num = num.unwrap_or(BlockHashOrEpochNumber::EpochNumber(
+            EpochNumber::LatestState,
+        ));
         info!(
             "RPC Request: cfx_getTransactionCount address={:?} epoch_num={:?}",
             address, num
@@ -403,10 +393,6 @@ impl RpcImpl {
     pub fn clear_tx_pool(&self) -> RpcResult<()> {
         self.tx_pool.clear_tx_pool();
         Ok(())
-    }
-
-    pub fn net_high_priority_packets(&self) -> RpcResult<usize> {
-        Ok(get_high_priority_packets())
     }
 
     pub fn net_node(&self, id: NodeId) -> RpcResult<Option<(String, Node)>> {

@@ -20,10 +20,11 @@ use crate::{
 use cfx_bytes::Bytes;
 use keccak_hash::keccak;
 use keylib::{sign, Generator, KeyPair, Random, Secret};
-use mio::{deprecated::EventLoop, tcp::*, udp::*, *};
+use mio::{tcp::*, udp::*, *};
 use parity_path::restrict_permissions_owner;
 use parking_lot::{Mutex, RwLock};
 use priority_send_queue::SendQueuePriority;
+use rustc_hex::ToHex;
 use std::{
     cmp::{min, Ordering},
     collections::{BinaryHeap, HashMap, HashSet, VecDeque},
@@ -147,7 +148,9 @@ impl NetworkService {
 
     /// Create and start the event loop inside the NetworkService
     pub fn start(&mut self) -> Result<(), Error> {
-        let raw_io_service = IoService::<NetworkIoMessage>::start()?;
+        let network_poll = Arc::new(Poll::new().unwrap());
+        let raw_io_service =
+            IoService::<NetworkIoMessage>::start(network_poll.clone())?;
         self.io_service = Some(raw_io_service);
 
         if self.inner.is_none() {
@@ -166,6 +169,15 @@ impl NetworkService {
             self.inner = Some(inner);
         }
 
+        let handler = self.inner.as_ref().unwrap().clone();
+        let main_event_loop_channel =
+            self.io_service.as_ref().unwrap().channel();
+        IoService::start_network_poll(
+            network_poll,
+            handler,
+            main_event_loop_channel,
+            MAX_SESSIONS,
+        );
         Ok(())
     }
 
@@ -309,6 +321,7 @@ impl NetworkService {
 type SharedSession = Arc<RwLock<Session>>;
 
 pub struct HostMetadata {
+    pub network_id: u64,
     /// Our private and public keys.
     pub keys: KeyPair,
     pub capabilities: RwLock<Vec<Capability>>,
@@ -501,6 +514,7 @@ impl NetworkServiceInner {
 
         let mut inner = NetworkServiceInner {
             metadata: HostMetadata {
+                network_id: config.id,
                 keys,
                 capabilities: RwLock::new(Vec::new()),
                 local_address: listen_address,
@@ -985,13 +999,17 @@ impl NetworkServiceInner {
             }
         }
         for (protocol, data) in messages {
-            if let Some(handler) = handlers.get(&protocol).clone() {
-                handler.on_message(
-                    &NetworkContext::new(io, protocol, self),
-                    stream,
-                    &data,
-                );
-            }
+            io.handle(
+                stream,
+                0, /* We only have one handler for the execution event_loop,
+                    * so the handler_id is always 0 */
+                NetworkIoMessage::HandleProtocolMessage {
+                    protocol,
+                    peer: stream,
+                    data,
+                },
+            )
+            .expect("Fail to send NetworkIoMessage::HandleNetworkWork");
         }
     }
 
@@ -1436,14 +1454,27 @@ impl IoHandler<NetworkIoMessage> for NetworkServiceInner {
                     warn!("Work is dispatched to unknown handler");
                 }
             }
+            NetworkIoMessage::HandleProtocolMessage {
+                ref protocol,
+                ref peer,
+                ref data,
+            } => {
+                if let Some(handler) = self.handlers.read().get(protocol) {
+                    handler.on_message(
+                        &NetworkContext::new(io, *protocol, self),
+                        *peer,
+                        data,
+                    );
+                } else {
+                    warn!("Work is handled by unknown handler");
+                }
+            }
         }
     }
 
     fn register_stream(
-        &self, stream: StreamToken, reg: Token,
-        event_loop: &mut EventLoop<IoManager<NetworkIoMessage>>,
-    )
-    {
+        &self, stream: StreamToken, reg: Token, event_loop: &Poll,
+    ) {
         match stream {
             FIRST_SESSION..=LAST_SESSION => {
                 if let Some(session) = self.sessions.get(stream) {
@@ -1477,11 +1508,7 @@ impl IoHandler<NetworkIoMessage> for NetworkServiceInner {
         }
     }
 
-    fn deregister_stream(
-        &self, stream: StreamToken,
-        event_loop: &mut EventLoop<IoManager<NetworkIoMessage>>,
-    )
-    {
+    fn deregister_stream(&self, stream: StreamToken, event_loop: &Poll) {
         match stream {
             FIRST_SESSION..=LAST_SESSION => {
                 if let Some(session) = self.sessions.get(stream) {
@@ -1505,10 +1532,8 @@ impl IoHandler<NetworkIoMessage> for NetworkServiceInner {
     }
 
     fn update_stream(
-        &self, stream: StreamToken, reg: Token,
-        event_loop: &mut EventLoop<IoManager<NetworkIoMessage>>,
-    )
-    {
+        &self, stream: StreamToken, reg: Token, event_loop: &Poll,
+    ) {
         match stream {
             FIRST_SESSION..=LAST_SESSION => {
                 if let Some(session) = self.sessions.get(stream) {
@@ -1747,7 +1772,7 @@ fn save_key(path: &Path, key: &Secret) {
     if let Err(e) = restrict_permissions_owner(path, true, false) {
         warn!("Failed to modify permissions of the file ({})", e);
     }
-    if let Err(e) = file.write(&key.hex().into_bytes()[2..]) {
+    if let Err(e) = file.write(&key.to_hex().into_bytes()) {
         warn!("Error writing key file: {:?}", e);
     }
 }

@@ -86,6 +86,12 @@ pub trait TestRpc {
         &self, num_txs: usize, block_size_limit: usize, blame_info: BlameInfo,
     ) -> RpcResult<H256>;
 
+    #[rpc(name = "test_generate_block_with_nonce_and_timestamp")]
+    fn generate_block_with_nonce_and_timestamp(
+        &self, parent: H256, referees: Vec<H256>, raw: Bytes, nonce: u64,
+        timestamp: u64,
+    ) -> RpcResult<H256>;
+
     #[rpc(name = "gettransactionreceipt")]
     fn get_transaction_receipt(
         &self, tx_hash: H256,
@@ -93,4 +99,9 @@ pub trait TestRpc {
 
     #[rpc(name = "expireblockgc")]
     fn expire_block_gc(&self, timeout: u64) -> RpcResult<()>;
+
+    #[rpc(name = "test_sendUsableGenesisAccounts")]
+    fn send_usable_genesis_accounts(
+        &self, account_start_index: usize,
+    ) -> RpcResult<Bytes>;
 }

@@ -3,10 +3,11 @@
 // See http://www.gnu.org/licenses/
 
 use super::super::types::{
-    Block, Bytes, EpochNumber, Filter as RpcFilter, Log as RpcLog,
-    Receipt as RpcReceipt, Transaction, Transaction as RpcTransaction,
-    H160 as RpcH160, H256 as RpcH256, U256 as RpcU256, U64 as RpcU64,
+    Block, Bytes, CallRequest, EpochNumber, Filter as RpcFilter, Log as RpcLog,
+    Receipt as RpcReceipt, Transaction, H160 as RpcH160, H256 as RpcH256,
+    U256 as RpcU256, U64 as RpcU64,
 };
+use crate::rpc::types::BlockHashOrEpochNumber;
 use jsonrpc_core::Result as RpcResult;
 use jsonrpc_derive::rpc;
 
@@ -86,7 +87,7 @@ pub trait Cfx {
     /// (epoch number).
     #[rpc(name = "cfx_getTransactionCount")]
     fn transaction_count(
-        &self, addr: RpcH160, epoch_number: Option<EpochNumber>,
+        &self, addr: RpcH160, epoch_number: Option<BlockHashOrEpochNumber>,
     ) -> RpcResult<RpcU256>;
 
     //        /// Returns the number of transactions in a block with given hash.
@@ -113,19 +114,14 @@ pub trait Cfx {
     #[rpc(name = "cfx_sendRawTransaction")]
     fn send_raw_transaction(&self, raw_tx: Bytes) -> RpcResult<RpcH256>;
 
-    #[rpc(name = "cfx_sendUsableGenesisAccounts")]
-    fn send_usable_genesis_accounts(
-        &self, raw_addresses: Bytes, raw_secrets: Bytes,
-    ) -> RpcResult<Bytes>;
-
     //        /// @alias of `cfx_sendRawTransaction`.
     //        #[rpc(name = "cfx_submitTransaction")]
     //        fn submit_transaction(&self, Bytes) -> RpcResult<RpcH256>;
 
-    /// Call contract, returning hte output data.
+    /// Call contract, returning the output data.
     #[rpc(name = "cfx_call")]
     fn call(
-        &self, tx: RpcTransaction, epoch_number: Option<EpochNumber>,
+        &self, tx: CallRequest, epoch_number: Option<EpochNumber>,
     ) -> RpcResult<Bytes>;
 
     /// Returns logs matching the filter provided.
@@ -144,7 +140,9 @@ pub trait Cfx {
     ) -> RpcResult<Option<Transaction>>;
 
     #[rpc(name = "cfx_estimateGas")]
-    fn estimate_gas(&self, tx: RpcTransaction) -> RpcResult<RpcU256>;
+    fn estimate_gas(
+        &self, request: CallRequest, epoch_number: Option<EpochNumber>,
+    ) -> RpcResult<RpcU256>;
 
     #[rpc(name = "cfx_getBlocksByEpoch")]
     fn blocks_by_epoch(
@@ -152,7 +150,7 @@ pub trait Cfx {
     ) -> RpcResult<Vec<RpcH256>>;
 
     #[rpc(name = "cfx_getTransactionReceipt")]
-    fn get_transaction_receipt(
+    fn transaction_receipt(
         &self, tx_hash: RpcH256,
     ) -> RpcResult<Option<RpcReceipt>>;
 

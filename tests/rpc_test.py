@@ -15,6 +15,9 @@ from test_framework.util import (
     WaitHandler,
 )
 
+from test_framework.util import assert_equal, connect_nodes, get_peer_addr, wait_until, WaitHandler, checktx, \
+    initialize_datadir
+
 
 class RpcTest(ConfluxTestFramework):
     def set_test_params(self):
@@ -61,8 +64,14 @@ class RpcTest(ConfluxTestFramework):
                     self._test_class(name, obj)
 
     def _test_class(self, class_name, class_type):
-        obj = class_type(self.nodes[0])
-
+        # TODO Clean old nodes
+        # Setup a clean node to run each test
+        self.stop_nodes()
+        self.add_nodes(1)
+        node_index = len(self.nodes) - 1
+        initialize_datadir(self.options.tmpdir, node_index, self.conf_parameters)
+        self.start_node(node_index)
+        obj = class_type(self.nodes[node_index])
         for name in dir(obj):
             m = getattr(obj, name)
             if type(m) is types.MethodType and name.startswith("test_"):

@@ -40,6 +40,12 @@ use crate::block_data_manager::{
 pub use block_data_types::*;
 use std::{hash::Hash, path::Path};
 
+use metrics::{register_meter_with_group, Meter, MeterTimer};
+lazy_static! {
+    static ref TX_POOL_RECOVER_TIMER: Arc<dyn Meter> =
+        register_meter_with_group("timer", "tx_pool::recover_public");
+}
+
 pub const NULLU64: u64 = !0;
 
 pub struct BlockDataManager {
@@ -598,7 +604,11 @@ impl BlockDataManager {
     pub fn epoch_set_hashes_from_db(
         &self, epoch_number: u64,
     ) -> Option<Vec<H256>> {
-        self.db_manager.epoch_set_hashes_from_db(epoch_number)
+        if epoch_number != 0 {
+            self.db_manager.epoch_set_hashes_from_db(epoch_number)
+        } else {
+            Some(vec![self.true_genesis_block.hash()])
+        }
     }
 
     /// Return `false` if there is no executed results for given `block_hash`
@@ -841,7 +851,7 @@ impl BlockDataManager {
         exeuction_contexts.shrink_to_fit();
     }
 
-    pub fn gc_cache(&self) {
+    pub fn cache_gc(&self) {
         self.block_cache_gc();
         self.tx_data_manager.tx_cache_gc();
     }
@@ -869,6 +879,7 @@ impl BlockDataManager {
     pub fn recover_unsigned_tx(
         &self, transactions: &Vec<TransactionWithSignature>,
     ) -> Result<Vec<Arc<SignedTransaction>>, DecoderError> {
+        let _timer = MeterTimer::time_func(TX_POOL_RECOVER_TIMER.as_ref());
         self.tx_data_manager.recover_unsigned_tx(transactions)
     }
 

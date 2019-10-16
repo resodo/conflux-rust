@@ -8,8 +8,9 @@ use cfxcore::{
     consensus::{ConsensusConfig, ConsensusInnerConfig},
     consensus_parameters::*,
     storage::{self, state_manager::StorageConfiguration},
-    sync::ProtocolConfiguration,
+    sync::{ProtocolConfiguration, SyncGraphConfig},
 };
+use metrics::MetricsConfiguration;
 use std::convert::TryInto;
 use txgen::TransactionGeneratorConfig;
 
@@ -41,8 +42,10 @@ build_config! {
         (jsonrpc_cors, (Option<String>), None)
         (jsonrpc_http_keep_alive, (bool), false)
         (genesis_accounts, (Option<String>), None)
+        (genesis_secrets, (Option<String>), None)
         (log_conf, (Option<String>), None)
         (log_file, (Option<String>), None)
+        (network_id, (u64), 1)
         (bootnodes, (Option<String>), None)
         (netconf_dir, (Option<String>), Some("./net_config".to_string()))
         (net_key, (Option<String>), None)
@@ -105,8 +108,13 @@ build_config! {
         // FIXME: break into two options: one for enable, one for path.
         (debug_dump_dir_invalid_state_root, (String), "./storage/debug_dump_invalid_state_root/".to_string())
         (metrics_enabled, (bool), false)
-        (metrics_report_interval_ms, (u64), 5000)
-        (metrics_output_file, (String), "metrics.log".to_string())
+        (metrics_report_interval_ms, (u64), 3000)
+        (metrics_output_file, (Option<String>), None)
+        (metrics_influxdb_host, (Option<String>), None)
+        (metrics_influxdb_db, (String), "conflux".into())
+        (metrics_influxdb_username, (Option<String>), None)
+        (metrics_influxdb_password, (Option<String>), None)
+        (metrics_influxdb_node, (Option<String>), None)
         (min_peers_propagation, (usize), 8)
         (max_peers_propagation, (usize), 128)
         (future_block_buffer_capacity, (usize), 32768)
@@ -115,6 +123,8 @@ build_config! {
         (max_download_state_peers, (usize), 8)
         (block_db_type, (String), "rocksdb".to_string())
         (no_defer, (bool), false)
+        (rocksdb_disable_wal, (bool), false)
+        (enable_state_expose, (bool), false)
     }
     {
         (
@@ -158,6 +168,7 @@ impl Configuration {
             None => NetworkConfiguration::default(),
         };
 
+        network_config.id = self.raw_conf.network_id;
         network_config.discovery_enabled = self.raw_conf.enable_discovery;
         network_config.boot_nodes = to_bootnodes(&self.raw_conf.bootnodes)
             .map_err(|e| format!("failed to parse bootnodes: {}", e))?;
@@ -236,10 +247,16 @@ impl Configuration {
             self.raw_conf.db_cache_size.clone(),
             compact_profile,
             NUM_COLUMNS.clone(),
+            self.raw_conf.rocksdb_disable_wal,
         )
     }
 
     pub fn consensus_config(&self) -> ConsensusConfig {
+        let enable_optimistic_execution = if DEFERRED_STATE_EPOCH_COUNT <= 1 {
+            false
+        } else {
+            self.raw_conf.enable_optimistic_execution
+        };
         ConsensusConfig {
             debug_dump_dir_invalid_state_root: self
                 .raw_conf
@@ -258,9 +275,8 @@ impl Configuration {
                     .heavy_block_difficulty_ratio,
                 era_epoch_count: self.raw_conf.era_epoch_count,
                 era_checkpoint_gap: self.raw_conf.era_checkpoint_gap,
-                enable_optimistic_execution: self
-                    .raw_conf
-                    .enable_optimistic_execution,
+                enable_optimistic_execution,
+                enable_state_expose: self.raw_conf.enable_state_expose,
             },
             bench_mode: false,
             no_defer: self.raw_conf.no_defer,
@@ -370,6 +386,33 @@ impl Configuration {
                 _ => panic!("Invalid block_db_type parameter!"),
             },
         )
+    }
+
+    pub fn sync_graph_config(&self) -> SyncGraphConfig {
+        SyncGraphConfig {
+            enable_state_expose: self.raw_conf.enable_state_expose,
+        }
+    }
+
+    pub fn metrics_config(&self) -> MetricsConfiguration {
+        MetricsConfiguration {
+            enabled: self.raw_conf.metrics_enabled,
+            report_interval: Duration::from_millis(
+                self.raw_conf.metrics_report_interval_ms,
+            ),
+            file_report_output: self.raw_conf.metrics_output_file.clone(),
+            influxdb_report_host: self.raw_conf.metrics_influxdb_host.clone(),
+            influxdb_report_db: self.raw_conf.metrics_influxdb_db.clone(),
+            influxdb_report_username: self
+                .raw_conf
+                .metrics_influxdb_username
+                .clone(),
+            influxdb_report_password: self
+                .raw_conf
+                .metrics_influxdb_password
+                .clone(),
+            influxdb_report_node: self.raw_conf.metrics_influxdb_node.clone(),
+        }
     }
 }
 

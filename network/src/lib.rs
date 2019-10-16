@@ -21,7 +21,6 @@ extern crate serde_derive;
 extern crate enum_map;
 extern crate igd;
 extern crate keccak_hash as hash;
-extern crate keylib;
 extern crate libc;
 extern crate parity_path;
 extern crate rand;
@@ -30,6 +29,7 @@ extern crate enum_map_derive;
 extern crate strum;
 #[macro_use]
 extern crate strum_macros;
+extern crate ethkey as keylib;
 extern crate keccak_hash;
 
 pub const PROTOCOL_ID_SIZE: usize = 3;
@@ -51,7 +51,6 @@ mod session_manager;
 pub mod throttling;
 
 pub use crate::{
-    connection::get_high_priority_packets,
     error::{DisconnectReason, Error, ErrorKind, ThrottlingReason},
     ip::SessionIpLimitConfig,
     node_table::Node,
@@ -87,6 +86,8 @@ pub const NODE_TAG_ARCHIVE: &str = "archive";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NetworkConfiguration {
+    /// Network identifier
+    pub id: u64,
     /// Directory path to store general network configuration. None means
     /// nothing will be saved
     pub config_path: Option<String>,
@@ -142,6 +143,7 @@ impl Default for NetworkConfiguration {
 impl NetworkConfiguration {
     pub fn new() -> Self {
         NetworkConfiguration {
+            id: 1,
             config_path: Some("./net_config".to_string()),
             listen_address: None,
             public_address: None,
@@ -211,6 +213,11 @@ pub enum NetworkIoMessage {
         protocol: ProtocolId,
         /// Work type.
         work_type: HandlerWorkType,
+    },
+    HandleProtocolMessage {
+        protocol: ProtocolId,
+        peer: PeerId,
+        data: Vec<u8>,
     },
 }
 

@@ -6,12 +6,13 @@ extern crate futures;
 
 use cfx_types::{Bloom, H160, H256, KECCAK_EMPTY_BLOOM};
 use futures::{future, stream, Future, Stream};
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc};
 
 use primitives::{
     filter::{Filter, FilterError},
     log_entry::{LocalizedLogEntry, LogEntry},
     Account, EpochNumber, Receipt, SignedTransaction, StateRoot,
+    TransactionAddress,
 };
 
 use crate::{
@@ -19,7 +20,7 @@ use crate::{
     network::{NetworkContext, NetworkService},
     parameters::{
         consensus::DEFERRED_STATE_EPOCH_COUNT,
-        light::{LOG_FILTERING_LOOKAHEAD, MAX_POLL_TIME_MS},
+        light::{LOG_FILTERING_LOOKAHEAD, MAX_POLL_TIME},
     },
     statedb::StorageKey,
     storage,
@@ -30,6 +31,14 @@ use super::{
     common::{poll_future, poll_stream, with_timeout, LedgerInfo},
     Error, Handler as LightHandler, LIGHT_PROTOCOL_ID, LIGHT_PROTOCOL_VERSION,
 };
+
+type TxInfo = (
+    SignedTransaction,
+    Receipt,
+    TransactionAddress,
+    Option<u64>,  /* maybe_epoch */
+    Option<H256>, /* maybe_state_root */
+);
 
 pub struct QueryService {
     // shared consensus graph
@@ -86,7 +95,7 @@ impl QueryService {
         trace!("retrieve_state_root epoch = {}", epoch);
 
         with_timeout(
-            Duration::from_millis(MAX_POLL_TIME_MS), /* timeout */
+            *MAX_POLL_TIME, /* timeout */
             format!("Timeout while retrieving state root for epoch {}", epoch), /* error */
             self.with_io(|io| self.handler.state_roots.request_now(io, epoch)),
         )
@@ -98,7 +107,7 @@ impl QueryService {
         trace!("retrieve_state_entry epoch = {}, key = {:?}", epoch, key);
 
         with_timeout(
-            Duration::from_millis(MAX_POLL_TIME_MS), /* timeout */
+            *MAX_POLL_TIME, /* timeout */
             format!("Timeout while retrieving state entry for epoch {} with key {:?}", epoch, key), /* error */
             self.with_io(|io| self.handler.state_entries.request_now(io, epoch, key.clone()))
         )
@@ -110,7 +119,7 @@ impl QueryService {
         trace!("retrieve_bloom epoch = {}", epoch);
 
         with_timeout(
-            Duration::from_millis(MAX_POLL_TIME_MS), /* timeout */
+            *MAX_POLL_TIME, /* timeout */
             format!("Timeout while retrieving bloom for epoch {}", epoch), /* error */
             self.handler.blooms.request(epoch),
         )
@@ -122,7 +131,7 @@ impl QueryService {
         trace!("retrieve_receipts epoch = {}", epoch);
 
         with_timeout(
-            Duration::from_millis(MAX_POLL_TIME_MS), /* timeout */
+            *MAX_POLL_TIME, /* timeout */
             format!("Timeout while retrieving receipts for epoch {}", epoch), /* error */
             self.handler.receipts.request(epoch),
         )
@@ -134,9 +143,24 @@ impl QueryService {
         trace!("retrieve_block_txs hash = {:?}", hash);
 
         with_timeout(
-            Duration::from_millis(MAX_POLL_TIME_MS), /* timeout */
+            *MAX_POLL_TIME, /* timeout */
             format!("Timeout while retrieving block txs for block {}", hash), /* error */
             self.handler.block_txs.request(hash),
+        )
+    }
+
+    fn retrieve_tx_info<'a>(
+        &'a self, hash: H256,
+    ) -> impl Future<
+        Item = (SignedTransaction, Receipt, TransactionAddress),
+        Error = Error,
+    > + 'a {
+        trace!("retrieve_tx_info hash = {:?}", hash);
+
+        with_timeout(
+            *MAX_POLL_TIME, /* timeout */
+            format!("Timeout while retrieving tx info for tx {}", hash), /* error */
+            self.with_io(|io| self.handler.tx_infos.request_now(io, hash)),
         )
     }
 
@@ -246,6 +270,31 @@ impl QueryService {
         }
     }
 
+    pub fn get_tx_info(&self, hash: H256) -> Result<TxInfo, String> {
+        info!("get_tx_info hash={:?}", hash);
+
+        let mut info = self.retrieve_tx_info(hash).map(|info| {
+            let (tx, receipt, address) = info;
+
+            let hash = address.block_hash;
+            let epoch = self.consensus.get_block_epoch_number(&hash);
+
+            let root = epoch
+                .and_then(|e| self.handler.witnesses.root_hashes_of(e))
+                .map(|(state_root, _, _)| state_root);
+
+            (tx, receipt, address, epoch, root)
+        });
+
+        match poll_future(&mut info) {
+            Ok(info) => Ok(info),
+            Err(e) => {
+                warn!("Error while retrieving tx info: {}", e);
+                Err(format!("{}", e))
+            }
+        }
+    }
+
     /// Relay raw transaction to all peers.
     // TODO(thegaram): consider returning TxStatus instead of bool,
     // e.g. Failed, Sent/Pending, Confirmed, etc.
@@ -282,7 +331,7 @@ impl QueryService {
             let tx = self.with_io(|io| self.handler.txs.request_now(io, hash));
 
             with_timeout(
-                Duration::from_millis(MAX_POLL_TIME_MS), /* timeout */
+                *MAX_POLL_TIME,                                  /* timeout */
                 format!("Timeout while retrieving tx {}", hash), /* error */
                 tx,
             )

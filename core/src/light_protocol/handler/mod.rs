@@ -8,7 +8,7 @@ use cfx_types::H256;
 use io::TimerToken;
 use parking_lot::RwLock;
 use rlp::Rlp;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use crate::{
     consensus::ConsensusGraph,
@@ -22,21 +22,22 @@ use crate::{
             NewBlockHashes, NodeType, Receipts as GetReceiptsResponse,
             SendRawTx, StateEntries as GetStateEntriesResponse,
             StateRoots as GetStateRootsResponse, StatusPing, StatusPong,
-            Txs as GetTxsResponse, WitnessInfo as GetWitnessInfoResponse,
+            TxInfos as GetTxInfosResponse, Txs as GetTxsResponse,
+            WitnessInfo as GetWitnessInfoResponse,
         },
         Error, ErrorKind, LIGHT_PROTOCOL_VERSION,
     },
     message::{decode_msg, Message, MsgId},
     network::{NetworkContext, NetworkProtocolHandler, PeerId},
     parameters::light::{
-        CATCH_UP_EPOCH_LAG_THRESHOLD, CLEANUP_PERIOD_MS, SYNC_PERIOD_MS,
+        CATCH_UP_EPOCH_LAG_THRESHOLD, CLEANUP_PERIOD, SYNC_PERIOD,
     },
     sync::SynchronizationGraph,
 };
 
 use sync::{
     BlockTxs, Blooms, Epochs, HashSource, Headers, Receipts, StateEntries,
-    StateRoots, Txs, Witnesses,
+    StateRoots, TxInfos, Txs, Witnesses,
 };
 
 const SYNC_TIMER: TimerToken = 0;
@@ -52,7 +53,7 @@ struct Statistics {
 /// dispatching messages to the query and sync sub-handlers.
 pub struct Handler {
     // block tx sync manager
-    pub block_txs: BlockTxs,
+    pub block_txs: Arc<BlockTxs>,
 
     // bloom sync manager
     pub blooms: Blooms,
@@ -70,7 +71,7 @@ pub struct Handler {
     pub peers: Arc<Peers<FullPeerState>>,
 
     // receipt sync manager
-    pub receipts: Receipts,
+    pub receipts: Arc<Receipts>,
 
     // state entry sync manager
     pub state_entries: StateEntries,
@@ -80,6 +81,9 @@ pub struct Handler {
 
     // tx sync manager
     pub txs: Arc<Txs>,
+
+    // tx info sync manager
+    pub tx_infos: TxInfos,
 
     // witness sync manager
     pub witnesses: Arc<Witnesses>,
@@ -122,11 +126,11 @@ impl Handler {
             witnesses.clone(),
         );
 
-        let receipts = Receipts::new(
+        let receipts = Arc::new(Receipts::new(
             peers.clone(),
             request_id_allocator.clone(),
             witnesses.clone(),
-        );
+        ));
 
         let state_roots = Arc::new(StateRoots::new(
             peers.clone(),
@@ -143,11 +147,19 @@ impl Handler {
         let txs =
             Arc::new(Txs::new(peers.clone(), request_id_allocator.clone()));
 
-        let block_txs = BlockTxs::new(
+        let block_txs = Arc::new(BlockTxs::new(
             consensus.clone(),
             peers.clone(),
             request_id_allocator.clone(),
             txs.clone(),
+        ));
+
+        let tx_infos = TxInfos::new(
+            block_txs.clone(),
+            consensus.clone(),
+            peers.clone(),
+            request_id_allocator.clone(),
+            receipts.clone(),
         );
 
         Handler {
@@ -161,6 +173,7 @@ impl Handler {
             state_entries,
             state_roots,
             txs,
+            tx_infos,
             witnesses,
         }
     }
@@ -237,6 +250,7 @@ impl Handler {
             msgid::STATE_ENTRIES => self.on_state_entries(io, peer, &rlp),
             msgid::STATE_ROOTS => self.on_state_roots(io, peer, &rlp),
             msgid::TXS => self.on_txs(io, peer, &rlp),
+            msgid::TX_INFOS => self.on_tx_infos(io, peer, &rlp),
             msgid::WITNESS_INFO => self.on_witness_info(io, peer, &rlp),
 
             _ => Err(ErrorKind::UnknownMessage.into()),
@@ -296,7 +310,6 @@ impl Handler {
     ) -> Result<(), Error> {
         let msg: Box<dyn Message> = Box::new(StatusPing {
             genesis_hash: self.consensus.data_man.true_genesis_block.hash(),
-            network_id: 0x0,
             node_type: NodeType::Light,
             protocol_version: LIGHT_PROTOCOL_VERSION,
         });
@@ -462,6 +475,18 @@ impl Handler {
         Ok(())
     }
 
+    fn on_tx_infos(
+        &self, io: &dyn NetworkContext, _peer: PeerId, rlp: &Rlp,
+    ) -> Result<(), Error> {
+        let resp: GetTxInfosResponse = rlp.as_val()?;
+        info!("on_tx_infos resp={:?}", resp);
+
+        self.tx_infos.receive(resp.infos.into_iter())?;
+
+        self.tx_infos.sync(io);
+        Ok(())
+    }
+
     fn on_witness_info(
         &self, io: &dyn NetworkContext, _peer: PeerId, rlp: &Rlp,
     ) -> Result<(), Error> {
@@ -495,6 +520,7 @@ impl Handler {
         self.state_entries.sync(io);
         self.state_roots.sync(io);
         self.txs.sync(io);
+        self.tx_infos.sync(io);
     }
 
     fn clean_up_requests(&self) {
@@ -506,6 +532,7 @@ impl Handler {
         self.receipts.clean_up();
         self.state_entries.clean_up();
         self.state_roots.clean_up();
+        self.tx_infos.clean_up();
         self.txs.clean_up();
         self.witnesses.clean_up();
     }
@@ -513,12 +540,10 @@ impl Handler {
 
 impl NetworkProtocolHandler for Handler {
     fn initialize(&self, io: &dyn NetworkContext) {
-        let period = Duration::from_millis(SYNC_PERIOD_MS);
-        io.register_timer(SYNC_TIMER, period)
+        io.register_timer(SYNC_TIMER, *SYNC_PERIOD)
             .expect("Error registering sync timer");
 
-        let period = Duration::from_millis(CLEANUP_PERIOD_MS);
-        io.register_timer(REQUEST_CLEANUP_TIMER, period)
+        io.register_timer(REQUEST_CLEANUP_TIMER, *CLEANUP_PERIOD)
             .expect("Error registering request cleanup timer");
     }
 

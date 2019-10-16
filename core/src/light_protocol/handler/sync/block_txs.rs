@@ -3,12 +3,14 @@
 // See http://www.gnu.org/licenses/
 
 extern crate futures;
+extern crate lru_time_cache;
 
 use cfx_types::H256;
 use futures::Future;
+use lru_time_cache::LruCache;
 use parking_lot::RwLock;
 use primitives::{Block, SignedTransaction};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use crate::{
     consensus::ConsensusGraph,
@@ -20,7 +22,7 @@ use crate::{
     message::Message,
     network::{NetworkContext, PeerId},
     parameters::light::{
-        BLOCK_TX_REQUEST_BATCH_SIZE, BLOCK_TX_REQUEST_TIMEOUT_MS,
+        BLOCK_TX_REQUEST_BATCH_SIZE, BLOCK_TX_REQUEST_TIMEOUT, CACHE_TIMEOUT,
         MAX_BLOCK_TXS_IN_FLIGHT,
     },
 };
@@ -32,8 +34,8 @@ use super::{
 
 #[derive(Debug)]
 struct Statistics {
+    cached: usize,
     in_flight: usize,
-    verified: usize,
     waiting: usize,
 }
 
@@ -54,7 +56,7 @@ pub struct BlockTxs {
     txs: Arc<Txs>,
 
     // block txs received from full node
-    verified: Arc<RwLock<HashMap<H256, Vec<SignedTransaction>>>>,
+    verified: Arc<RwLock<LruCache<H256, Vec<SignedTransaction>>>>,
 }
 
 impl BlockTxs {
@@ -65,7 +67,9 @@ impl BlockTxs {
     {
         let ledger = LedgerInfo::new(consensus.clone());
         let sync_manager = SyncManager::new(peers.clone());
-        let verified = Arc::new(RwLock::new(HashMap::new()));
+
+        let cache = LruCache::with_expiry_duration(*CACHE_TIMEOUT);
+        let verified = Arc::new(RwLock::new(cache));
 
         BlockTxs {
             ledger,
@@ -79,8 +83,8 @@ impl BlockTxs {
     #[inline]
     fn get_statistics(&self) -> Statistics {
         Statistics {
+            cached: self.verified.read().len(),
             in_flight: self.sync_manager.num_in_flight(),
-            verified: self.verified.read().len(),
             waiting: self.sync_manager.num_waiting(),
         }
     }
@@ -103,10 +107,11 @@ impl BlockTxs {
     ) -> Result<(), Error> {
         for BlockTxsWithHash { hash, block_txs } in block_txs {
             info!("Validating block_txs {:?} with hash {}", block_txs, hash);
-            self.validate_block_txs(hash, &block_txs)?;
-
-            // store each transaction by its hash
+            // validate and store each transaction
             self.txs.receive(block_txs.clone().into_iter())?;
+
+            // validate block txs
+            self.validate_block_txs(hash, &block_txs)?;
 
             // store block bodies by block hash
             self.verified.write().insert(hash, block_txs);
@@ -117,10 +122,22 @@ impl BlockTxs {
     }
 
     #[inline]
+    pub fn receive_single(
+        &self, hash: H256, block_txs: Vec<SignedTransaction>,
+    ) -> Result<(), Error> {
+        let item = BlockTxsWithHash { hash, block_txs };
+        self.receive(std::iter::once(item))
+    }
+
+    #[inline]
     pub fn clean_up(&self) {
-        let timeout = Duration::from_millis(BLOCK_TX_REQUEST_TIMEOUT_MS);
+        // remove timeout in-flight requests
+        let timeout = *BLOCK_TX_REQUEST_TIMEOUT;
         let block_txs = self.sync_manager.remove_timeout_requests(timeout);
         self.sync_manager.insert_waiting(block_txs.into_iter());
+
+        // trigger cache cleanup
+        self.verified.write().get(&Default::default());
     }
 
     #[inline]
@@ -157,18 +174,8 @@ impl BlockTxs {
     pub fn validate_block_txs(
         &self, hash: H256, txs: &Vec<SignedTransaction>,
     ) -> Result<(), Error> {
-        // first, validate signatures for each tx
-        for tx in txs {
-            match tx.verify_public(false /* skip */) {
-                Ok(true) => continue,
-                _ => {
-                    warn!("Tx signature verification failed for {:?}", tx);
-                    return Err(ErrorKind::InvalidTxSignature.into());
-                }
-            }
-        }
+        // NOTE: tx signatures have been validated previously
 
-        // then, compute tx root and match against header info
         let local = *self.ledger.header(hash)?.transactions_root();
 
         let txs: Vec<_> = txs.iter().map(|tx| Arc::new(tx.clone())).collect();

@@ -12,7 +12,7 @@ use crate::{
 };
 use bytes::Bytes;
 use io::*;
-use mio::{deprecated::*, tcp::*, *};
+use mio::{tcp::*, *};
 use priority_send_queue::SendQueuePriority;
 use rlp::{Rlp, RlpStream};
 use serde_derive::Serialize;
@@ -152,8 +152,8 @@ impl Session {
 
     /// Register event loop for the underlying connection.
     /// If session expired, no effect taken.
-    pub fn register_socket<H: Handler>(
-        &self, reg: Token, event_loop: &mut EventLoop<H>,
+    pub fn register_socket(
+        &self, reg: Token, event_loop: &Poll,
     ) -> Result<(), Error> {
         if !self.expired() {
             self.connection().register_socket(reg, event_loop)?;
@@ -163,17 +163,15 @@ impl Session {
     }
 
     /// Update the event loop for the underlying connection.
-    pub fn update_socket<H: Handler>(
-        &self, reg: Token, event_loop: &mut EventLoop<H>,
+    pub fn update_socket(
+        &self, reg: Token, event_loop: &Poll,
     ) -> Result<(), Error> {
         self.connection().update_socket(reg, event_loop)?;
         Ok(())
     }
 
     /// Deregister the event loop for the underlying connection.
-    pub fn deregister_socket<H: Handler>(
-        &self, event_loop: &mut EventLoop<H>,
-    ) -> Result<(), Error> {
+    pub fn deregister_socket(&self, event_loop: &Poll) -> Result<(), Error> {
         self.connection().deregister_socket(event_loop)?;
         Ok(())
     }
@@ -331,7 +329,15 @@ impl Session {
     fn read_hello(
         &mut self, rlp: &Rlp, host: &NetworkServiceInner,
     ) -> Result<(), Error> {
-        let peer_caps: Vec<Capability> = rlp.list_at(0)?;
+        let remote_network_id: u64 = rlp.val_at(0)?;
+        if remote_network_id != host.metadata.network_id {
+            debug!("failed to read hello, network id mismatch, self = {}, remote = {}", host.metadata.network_id, remote_network_id);
+            return Err(self.send_disconnect(DisconnectReason::Custom(
+                "network id mismatch".into(),
+            )));
+        }
+
+        let peer_caps: Vec<Capability> = rlp.list_at(1)?;
 
         let mut caps: Vec<Capability> = Vec::new();
         for hc in host.metadata.capabilities.read().iter() {
@@ -369,7 +375,7 @@ impl Session {
             return Err(self.send_disconnect(DisconnectReason::UselessPeer));
         }
 
-        let mut hello_from = NodeEndpoint::from_rlp(&rlp.at(1)?)?;
+        let mut hello_from = NodeEndpoint::from_rlp(&rlp.at(2)?)?;
         // Use the ip of the socket as endpoint ip directly.
         // We do not allow peers to specify the ip to avoid being used to DDoS
         // the target ip.
@@ -469,7 +475,8 @@ impl Session {
         &mut self, io: &IoContext<Message>, host: &NetworkServiceInner,
     ) -> Result<(), Error> {
         debug!("Sending Hello, session = {:?}", self);
-        let mut rlp = RlpStream::new_list(2);
+        let mut rlp = RlpStream::new_list(3);
+        rlp.append(&host.metadata.network_id);
         rlp.append_list(&*host.metadata.capabilities.read());
         host.metadata.public_endpoint.to_rlp_list(&mut rlp);
         self.send_packet(

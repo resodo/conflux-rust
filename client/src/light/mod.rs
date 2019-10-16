@@ -9,25 +9,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cfx_types::U256;
+use cfx_types::{Address, U256};
 use ctrlc::CtrlC;
 use db::SystemDB;
 use network::NetworkService;
 use parking_lot::{Condvar, Mutex};
 use secret_store::SecretStore;
 use threadpool::ThreadPool;
-
-use cfxcore::{
-    block_data_manager::BlockDataManager,
-    genesis,
-    state_exposer::{SharedStateExposer, StateExposer},
-    statistics::Statistics,
-    storage::StorageManager,
-    transaction_pool::DEFAULT_MAX_BLOCK_GAS_LIMIT,
-    vm_factory::VmFactory,
-    ConsensusGraph, LightQueryService, SynchronizationGraph, TransactionPool,
-    WORKER_COMPUTATION_PARALLELISM,
-};
 
 use crate::{
     configuration::Configuration,
@@ -37,6 +25,13 @@ use crate::{
         setup_debug_rpc_apis_light, setup_public_rpc_apis_light,
     },
 };
+use cfxcore::{
+    block_data_manager::BlockDataManager, genesis, statistics::Statistics,
+    storage::StorageManager, transaction_pool::DEFAULT_MAX_BLOCK_GAS_LIMIT,
+    vm_factory::VmFactory, ConsensusGraph, LightQueryService,
+    SynchronizationGraph, TransactionPool, WORKER_COMPUTATION_PARALLELISM,
+};
+use std::str::FromStr;
 
 use super::{
     http::Server as HttpServer, tcp::Server as TcpServer, TESTNET_VERSION,
@@ -79,16 +74,7 @@ impl LightClient {
     ) -> Result<LightClientHandle, String> {
         info!("Working directory: {:?}", std::env::current_dir());
 
-        if conf.raw_conf.metrics_enabled {
-            metrics::enable();
-            let reporter = metrics::FileReporter::new(
-                conf.raw_conf.metrics_output_file.clone(),
-            );
-            metrics::report_async(
-                reporter,
-                Duration::from_millis(conf.raw_conf.metrics_report_interval_ms),
-            );
-        }
+        metrics::initialize(conf.metrics_config());
 
         let worker_thread_pool = Arc::new(Mutex::new(ThreadPool::with_name(
             "Tx Recover".into(),
@@ -132,12 +118,18 @@ impl LightClient {
         }
 
         let genesis_accounts = if conf.raw_conf.test_mode {
+            match conf.raw_conf.genesis_secrets {
+                Some(ref file) => {
+                    genesis::default(secret_store.as_ref());
+                    genesis::load_secrets_file(file, secret_store.as_ref())?
+                }
+                None => genesis::default(secret_store.as_ref()),
+            }
+        } else {
             match conf.raw_conf.genesis_accounts {
                 Some(ref file) => genesis::load_file(file)?,
                 None => genesis::default(secret_store.as_ref()),
             }
-        } else {
-            genesis::default(secret_store.as_ref())
         };
 
         // FIXME: move genesis block to a dedicated directory near all conflux
@@ -145,7 +137,7 @@ impl LightClient {
         let genesis_block = storage_manager.initialize(
             genesis_accounts,
             DEFAULT_MAX_BLOCK_GAS_LIMIT.into(),
-            TESTNET_VERSION.into(),
+            Address::from_str(TESTNET_VERSION).unwrap(),
             U256::zero(),
         );
         debug!("Initialize genesis_block={:?}", genesis_block);
@@ -167,7 +159,6 @@ impl LightClient {
         ));
 
         let statistics = Arc::new(Statistics::new());
-        let state_exposer = SharedStateExposer::new(StateExposer::new());
 
         let vm = VmFactory::new(1024 * 32);
         let pow_config = conf.pow_config();
@@ -183,11 +174,14 @@ impl LightClient {
         ));
 
         let _protocol_config = conf.protocol_config();
+        let verification_config = conf.verification_config();
+        let sync_config = conf.sync_graph_config();
 
         let sync_graph = Arc::new(SynchronizationGraph::new(
             consensus.clone(),
             verification_config,
             pow_config,
+            sync_config,
             false,
         ));
 
@@ -211,7 +205,6 @@ impl LightClient {
             consensus.clone(),
             network.clone(),
             txpool.clone(),
-            state_exposer.clone(),
         ));
 
         let debug_rpc_http_server = super::rpc::start_http(

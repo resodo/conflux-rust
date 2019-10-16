@@ -399,6 +399,15 @@ impl SynchronizationProtocolHandler {
             ErrorKind::UnexpectedResponse => disconnect = true,
             ErrorKind::RequestNotFound => disconnect = false,
             ErrorKind::TooManyTrans => {}
+            ErrorKind::InvalidTimestamp => {
+                op = Some(UpdateNodeOperation::Demotion)
+            }
+            ErrorKind::InvalidSnapshotManifest(_) => {
+                op = Some(UpdateNodeOperation::Demotion)
+            }
+            ErrorKind::InvalidSnapshotChunk(_) => {
+                op = Some(UpdateNodeOperation::Demotion)
+            }
             ErrorKind::Decoder(_) => op = Some(UpdateNodeOperation::Remove),
             ErrorKind::Network(kind) => match kind {
                 network::ErrorKind::AddressParse => disconnect = false,
@@ -427,12 +436,10 @@ impl SynchronizationProtocolHandler {
                     op = Some(UpdateNodeOperation::Failure)
                 }
             },
+            ErrorKind::Storage(_) => {}
             ErrorKind::Msg(_) => op = Some(UpdateNodeOperation::Failure),
             ErrorKind::__Nonexhaustive {} => {
                 op = Some(UpdateNodeOperation::Failure)
-            }
-            ErrorKind::InvalidTimestamp => {
-                op = Some(UpdateNodeOperation::Demotion)
             }
         }
 
@@ -829,7 +836,6 @@ impl SynchronizationProtocolHandler {
 
         Status {
             protocol_version: SYNCHRONIZATION_PROTOCOL_VERSION,
-            network_id: 0x0,
             genesis_hash: self.graph.data_man.true_genesis_block.hash(),
             best_epoch: best_info.best_epoch_number,
             terminal_block_hashes: terminal_hashes,
@@ -1081,7 +1087,7 @@ impl SynchronizationProtocolHandler {
         self.broadcast_status(io);
     }
 
-    fn block_cache_gc(&self) { self.graph.data_man.gc_cache() }
+    fn cache_gc(&self) { self.graph.data_man.cache_gc() }
 
     fn log_statistics(&self) { self.graph.log_statistics(); }
 
@@ -1384,7 +1390,8 @@ impl NetworkProtocolHandler for SynchronizationProtocolHandler {
                 self.send_heartbeat(io);
             }
             BLOCK_CACHE_GC_TIMER => {
-                self.block_cache_gc();
+                self.cache_gc();
+                self.graph.try_remove_old_era_blocks_from_disk();
             }
             CHECK_CATCH_UP_MODE_TIMER => {
                 self.update_sync_phase(io);

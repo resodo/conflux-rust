@@ -1,3 +1,7 @@
+// Copyright 2019 Conflux Foundation. All rights reserved.
+// Conflux is free software and distributed under GNU General Public License.
+// See http://www.gnu.org/licenses/
+
 use crate::{
     metrics::{is_enabled, Metric},
     registry::{DEFAULT_GROUPING_REGISTRY, DEFAULT_REGISTRY},
@@ -22,6 +26,9 @@ pub trait Histogram: Send + Sync {
     fn sum(&self) -> u64 { 0 }
     fn update(&self, _v: u64) {}
     fn variance(&self) -> f64 { 0.0 }
+    fn update_since(&self, start_time: Instant) {
+        self.update(start_time.elapsed().as_nanos() as u64);
+    }
 }
 
 pub enum Sample {

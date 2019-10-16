@@ -17,7 +17,6 @@ use primitives::{
 #[derive(Clone, Debug, Default, RlpEncodable, RlpDecodable)]
 pub struct StatusPing {
     pub genesis_hash: H256,
-    pub network_id: u8,
     pub node_type: NodeType,
     pub protocol_version: u8,
 }
@@ -26,7 +25,6 @@ pub struct StatusPing {
 pub struct StatusPong {
     pub best_epoch: u64,
     pub genesis_hash: H256,
-    pub network_id: u8,
     pub node_type: NodeType,
     pub protocol_version: u8,
     pub terminals: Vec<H256>,
@@ -221,4 +219,65 @@ pub struct StateEntryWithKey {
 pub struct StateEntries {
     pub request_id: RequestId,
     pub entries: Vec<StateEntryWithKey>,
+}
+
+#[derive(Clone, Debug, Default, RlpEncodable, RlpDecodable)]
+pub struct GetTxInfos {
+    pub request_id: RequestId,
+    pub hashes: Vec<H256>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TxInfo {
+    pub epoch: u64,
+    pub block_hash: H256,
+    pub index: usize,
+    pub epoch_receipts: Vec<Vec<PrimitiveReceipt>>,
+    pub block_txs: Vec<SignedTransaction>,
+}
+
+impl Encodable for TxInfo {
+    fn rlp_append(&self, stream: &mut RlpStream) {
+        stream.begin_list(5);
+        stream.append(&self.epoch);
+        stream.append(&self.block_hash);
+        stream.append(&self.index);
+
+        stream.begin_list(self.epoch_receipts.len());
+        for r in &self.epoch_receipts {
+            stream.append_list(r);
+        }
+
+        stream.append_list(&self.block_txs);
+    }
+}
+
+impl Decodable for TxInfo {
+    fn decode(rlp: &Rlp) -> Result<TxInfo, DecoderError> {
+        let epoch = rlp.val_at(0)?;
+        let block_hash = rlp.val_at(1)?;
+        let index = rlp.val_at(2)?;
+
+        let epoch_receipts = rlp
+            .at(3)?
+            .into_iter()
+            .map(|x| Ok(x.as_list()?))
+            .collect::<Result<_, _>>()?;
+
+        let block_txs = rlp.list_at(4)?;
+
+        Ok(TxInfo {
+            epoch,
+            block_hash,
+            index,
+            epoch_receipts,
+            block_txs,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, RlpEncodable, RlpDecodable)]
+pub struct TxInfos {
+    pub request_id: RequestId,
+    pub infos: Vec<TxInfo>,
 }

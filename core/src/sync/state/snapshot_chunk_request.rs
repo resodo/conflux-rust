@@ -4,13 +4,15 @@
 
 use crate::{
     message::{HasRequestId, Message, MsgId, RequestId},
-    storage::{Chunk, ChunkKey},
     sync::{
         message::{
             msgid, Context, DynamicCapability, Handleable, KeyContainer,
         },
         request_manager::Request,
-        state::snapshot_chunk_response::SnapshotChunkResponse,
+        state::{
+            snapshot_chunk_response::SnapshotChunkResponse,
+            storage::{Chunk, ChunkKey},
+        },
         Error, ProtocolConfiguration,
     },
 };
@@ -40,7 +42,7 @@ build_has_request_id_impl! { SnapshotChunkRequest }
 
 impl Handleable for SnapshotChunkRequest {
     fn handle(self, ctx: &Context) -> Result<(), Error> {
-        let chunk = match Chunk::load(&self.chunk_key) {
+        let chunk = match Chunk::load(&self.checkpoint, &self.chunk_key) {
             Ok(Some(chunk)) => chunk,
             _ => Chunk::default(),
         };

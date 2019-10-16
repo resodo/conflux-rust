@@ -9,7 +9,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use cfx_types::H256;
@@ -24,7 +24,7 @@ use crate::{
     message::Message,
     network::{NetworkContext, PeerId},
     parameters::light::{
-        HEADER_REQUEST_BATCH_SIZE, HEADER_REQUEST_TIMEOUT_MS,
+        HEADER_REQUEST_BATCH_SIZE, HEADER_REQUEST_TIMEOUT,
         MAX_HEADERS_IN_FLIGHT,
     },
     sync::SynchronizationGraph,
@@ -204,7 +204,7 @@ impl Headers {
 
     #[inline]
     pub fn clean_up(&self) {
-        let timeout = Duration::from_millis(HEADER_REQUEST_TIMEOUT_MS);
+        let timeout = *HEADER_REQUEST_TIMEOUT;
         let headers = self.sync_manager.remove_timeout_requests(timeout);
         self.sync_manager.insert_waiting(headers.into_iter());
     }
@@ -243,6 +243,7 @@ impl Headers {
 #[cfg(test)]
 mod tests {
     use super::{super::common::PriorityQueue, HashSource, MissingHeader};
+    use cfx_types::H256;
     use rand::Rng;
     use std::{
         ops::Sub,
@@ -258,13 +259,13 @@ mod tests {
         let one_ms_ago = now.sub(Duration::from_millis(1));
 
         let h0 = MissingHeader {
-            hash: 0.into(),
+            hash: H256::from_low_u64_be(0),
             since: now,
             source: HashSource::Epoch,
         };
 
         let h1 = MissingHeader {
-            hash: 1.into(),
+            hash: H256::from_low_u64_be(1),
             since: one_ms_ago,
             source: HashSource::Epoch,
         };
@@ -272,7 +273,7 @@ mod tests {
         assert!(h0 < h1); // longer waiting time
 
         let h2 = MissingHeader {
-            hash: 2.into(),
+            hash: H256::from_low_u64_be(2),
             since: now,
             source: HashSource::Dependency,
         };
@@ -280,7 +281,7 @@ mod tests {
         assert!(h1 < h2); // higher source priority
 
         let h3 = MissingHeader {
-            hash: 3.into(),
+            hash: H256::from_low_u64_be(3),
             since: one_ms_ago,
             source: HashSource::Dependency,
         };
@@ -288,7 +289,7 @@ mod tests {
         assert!(h2 < h3); // longer waiting time
 
         let h4 = MissingHeader {
-            hash: 4.into(),
+            hash: H256::from_low_u64_be(4),
             since: now,
             source: HashSource::NewHash,
         };
@@ -296,7 +297,7 @@ mod tests {
         assert!(h3 < h4); // higher source priority
 
         let h5 = MissingHeader {
-            hash: 5.into(),
+            hash: H256::from_low_u64_be(5),
             since: one_ms_ago,
             source: HashSource::NewHash,
         };
@@ -304,7 +305,7 @@ mod tests {
         assert!(h4 < h5); // longer waiting time
 
         let h6 = MissingHeader {
-            hash: 6.into(),
+            hash: H256::from_low_u64_be(6),
             since: now,
             source: HashSource::NewHash,
         };
@@ -325,43 +326,43 @@ mod tests {
         let one_ms_ago = now.sub(Duration::from_millis(1));
 
         let h0 = MissingHeader {
-            hash: 0.into(),
+            hash: H256::from_low_u64_be(0),
             since: now,
             source: HashSource::Epoch,
         };
 
         let h1 = MissingHeader {
-            hash: 1.into(),
+            hash: H256::from_low_u64_be(1),
             since: one_ms_ago,
             source: HashSource::Epoch,
         };
 
         let h2 = MissingHeader {
-            hash: 2.into(),
+            hash: H256::from_low_u64_be(2),
             since: now,
             source: HashSource::Dependency,
         };
 
         let h3 = MissingHeader {
-            hash: 3.into(),
+            hash: H256::from_low_u64_be(3),
             since: one_ms_ago,
             source: HashSource::Dependency,
         };
 
         let h4 = MissingHeader {
-            hash: 4.into(),
+            hash: H256::from_low_u64_be(4),
             since: now,
             source: HashSource::NewHash,
         };
 
         let h5 = MissingHeader {
-            hash: 5.into(),
+            hash: H256::from_low_u64_be(5),
             since: one_ms_ago,
             source: HashSource::NewHash,
         };
 
         let h6 = MissingHeader {
-            hash: 5.into(),
+            hash: H256::from_low_u64_be(5),
             since: one_ms_ago,
             source: HashSource::NewHash,
         };

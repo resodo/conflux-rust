@@ -6,8 +6,8 @@ use delegate::delegate;
 use jsonrpc_core::{Error as RpcError, Result as RpcResult};
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
-use cfx_types::{H160, H256};
-use cfxcore::{light_protocol::QueryService, PeerInfo};
+use cfx_types::{H160, H256, U256};
+use cfxcore::{LightQueryService, PeerInfo};
 use primitives::TransactionWithSignature;
 
 use network::{
@@ -18,21 +18,25 @@ use network::{
 use crate::rpc::{
     traits::{cfx::Cfx, debug::DebugRpc, test::TestRpc},
     types::{
-        BlameInfo, Block as RpcBlock, Bytes, EpochNumber, Filter as RpcFilter,
+        BlameInfo, Block as RpcBlock, BlockHashOrEpochNumber, Bytes,
+        CallRequest, ConsensusGraphStates, EpochNumber, Filter as RpcFilter,
         Log as RpcLog, Receipt as RpcReceipt, Status as RpcStatus,
-        Transaction as RpcTransaction, H160 as RpcH160, H256 as RpcH256,
-        U256 as RpcU256, U64 as RpcU64,
+        SyncGraphStates, Transaction as RpcTransaction, H160 as RpcH160,
+        H256 as RpcH256, U256 as RpcU256, U64 as RpcU64,
     },
 };
 
 use super::common::RpcImpl as CommonImpl;
+use crate::rpc::types::SendTxRequest;
+use rlp::Encodable;
 
 pub struct RpcImpl {
-    light: Arc<QueryService>,
+    // helper API for retrieving verified information from peers
+    light: Arc<LightQueryService>,
 }
 
 impl RpcImpl {
-    pub fn new(light: Arc<QueryService>) -> Self { RpcImpl { light } }
+    pub fn new(light: Arc<LightQueryService>) -> Self { RpcImpl { light } }
 
     fn balance(
         &self, address: RpcH160, num: Option<EpochNumber>,
@@ -57,7 +61,7 @@ impl RpcImpl {
 
     #[allow(unused_variables)]
     fn call(
-        &self, rpc_tx: RpcTransaction, epoch: Option<EpochNumber>,
+        &self, request: CallRequest, epoch: Option<EpochNumber>,
     ) -> RpcResult<Bytes> {
         // TODO
         unimplemented!()
@@ -82,7 +86,9 @@ impl RpcImpl {
     }
 
     #[allow(unused_variables)]
-    fn estimate_gas(&self, rpc_tx: RpcTransaction) -> RpcResult<RpcU256> {
+    fn estimate_gas(
+        &self, request: CallRequest, epoch_number: Option<EpochNumber>,
+    ) -> RpcResult<RpcU256> {
         // TODO
         unimplemented!()
     }
@@ -119,12 +125,40 @@ impl RpcImpl {
         }
     }
 
-    #[allow(unused_variables)]
-    fn send_usable_genesis_accounts(
-        &self, raw_addresses: Bytes, raw_secrets: Bytes,
-    ) -> RpcResult<Bytes> {
-        // TODO
-        unimplemented!()
+    fn send_transaction(
+        &self, mut tx: SendTxRequest, password: Option<String>,
+    ) -> RpcResult<RpcH256> {
+        info!("RPC Request: send_transaction, tx = {:?}", tx);
+
+        if tx.nonce.is_none() {
+            // TODO(thegaram): consider adding a light node specific tx pool to
+            // track the nonce
+            let nonce = self
+                .light
+                .get_account(
+                    EpochNumber::LatestState.into_primitive(),
+                    tx.from.clone().into(),
+                )
+                .map_err(|e| {
+                    RpcError::invalid_params(format!(
+                        "failed to send transaction: {:?}",
+                        e
+                    ))
+                })?
+                .map(|a| a.nonce)
+                .unwrap_or(U256::zero());
+            tx.nonce.replace(nonce.into());
+            debug!("after loading nonce in latest state, tx = {:?}", tx);
+        }
+
+        let tx = tx.sign_with(password).map_err(|e| {
+            RpcError::invalid_params(format!(
+                "failed to send transaction: {:?}",
+                e
+            ))
+        })?;
+
+        self.send_raw_transaction(Bytes::new(tx.rlp_bytes()))
     }
 
     fn transaction_by_hash(
@@ -142,12 +176,25 @@ impl RpcImpl {
         Ok(Some(RpcTransaction::from_signed(&tx, None)))
     }
 
-    fn get_transaction_receipt(
+    fn transaction_receipt(
         &self, tx_hash: RpcH256,
     ) -> RpcResult<Option<RpcReceipt>> {
         let hash: H256 = tx_hash.into();
         info!("RPC Request: cfx_getTransactionReceipt({:?})", hash);
-        unimplemented!()
+
+        let (tx, receipt, address, maybe_epoch, maybe_state_root) = self
+            .light
+            .get_tx_info(hash)
+            .map_err(RpcError::invalid_params)?;
+
+        let mut receipt = RpcReceipt::new(tx, receipt, address);
+        receipt.set_epoch_number(maybe_epoch);
+
+        if let Some(state_root) = maybe_state_root {
+            receipt.set_state_root(state_root.into());
+        }
+
+        Ok(Some(receipt))
     }
 }
 
@@ -186,19 +233,18 @@ impl Cfx for CfxHandler {
             fn blocks_by_epoch(&self, num: EpochNumber) -> RpcResult<Vec<RpcH256>>;
             fn epoch_number(&self, epoch_num: Option<EpochNumber>) -> RpcResult<RpcU256>;
             fn gas_price(&self) -> RpcResult<RpcU256>;
-            fn transaction_count(&self, address: RpcH160, num: Option<EpochNumber>) -> RpcResult<RpcU256>;
+            fn transaction_count(&self, address: RpcH160, num: Option<BlockHashOrEpochNumber>) -> RpcResult<RpcU256>;
         }
 
         target self.rpc_impl {
             fn balance(&self, address: RpcH160, num: Option<EpochNumber>) -> RpcResult<RpcU256>;
-            fn call(&self, rpc_tx: RpcTransaction, epoch: Option<EpochNumber>) -> RpcResult<Bytes>;
+            fn call(&self, request: CallRequest, epoch: Option<EpochNumber>) -> RpcResult<Bytes>;
             fn code(&self, address: RpcH160, epoch_num: Option<EpochNumber>) -> RpcResult<Bytes>;
-            fn estimate_gas(&self, rpc_tx: RpcTransaction) -> RpcResult<RpcU256>;
+            fn estimate_gas(&self, request: CallRequest, epoch_num: Option<EpochNumber>) -> RpcResult<RpcU256>;
             fn get_logs(&self, filter: RpcFilter) -> RpcResult<Vec<RpcLog>>;
             fn send_raw_transaction(&self, raw: Bytes) -> RpcResult<RpcH256>;
-            fn send_usable_genesis_accounts(& self,raw_addresses:Bytes, raw_secrets:Bytes) ->RpcResult<Bytes>;
             fn transaction_by_hash(&self, hash: RpcH256) -> RpcResult<Option<RpcTransaction>>;
-            fn get_transaction_receipt(&self, tx_hash: RpcH256) -> RpcResult<Option<RpcReceipt>>;
+            fn transaction_receipt(&self, tx_hash: RpcH256) -> RpcResult<Option<RpcReceipt>>;
         }
     }
 }
@@ -240,8 +286,10 @@ impl TestRpc for TestRpcImpl {
         fn generate_custom_block(&self, parent_hash: H256, referee: Vec<H256>, raw_txs: Bytes, adaptive: Option<bool>) -> RpcResult<H256>;
         fn generate_fixed_block(&self, parent_hash: H256, referee: Vec<H256>, num_txs: usize, adaptive: bool, difficulty: Option<u64>) -> RpcResult<H256>;
         fn generate_one_block_special(&self, num_txs: usize, block_size_limit: usize, num_txs_simple: usize, num_txs_erc20: usize) -> RpcResult<()>;
+        fn generate_block_with_nonce_and_timestamp(&self, parent: H256, referees: Vec<H256>, raw: Bytes, nonce: u64, timestamp: u64) -> RpcResult<H256>;
         fn generate_one_block(&self, num_txs: usize, block_size_limit: usize) -> RpcResult<H256>;
         fn generate(&self, num_blocks: usize, num_txs: usize) -> RpcResult<Vec<H256>>;
+        fn send_usable_genesis_accounts(& self, account_start_index: usize) -> RpcResult<Bytes>;
     }
 }
 
@@ -261,7 +309,6 @@ impl DebugRpc for DebugRpcImpl {
     delegate! {
         target self.common {
             fn clear_tx_pool(&self) -> RpcResult<()>;
-            fn net_high_priority_packets(&self) -> RpcResult<usize>;
             fn net_node(&self, id: NodeId) -> RpcResult<Option<(String, Node)>>;
             fn net_disconnect_node(&self, id: NodeId, op: Option<UpdateNodeOperation>) -> RpcResult<Option<usize>>;
             fn net_sessions(&self, node_id: Option<NodeId>) -> RpcResult<Vec<SessionDetails>>;
@@ -271,9 +318,15 @@ impl DebugRpc for DebugRpcImpl {
             fn txpool_inspect(&self) -> RpcResult<BTreeMap<String, BTreeMap<String, BTreeMap<usize, Vec<String>>>>>;
             fn txpool_status(&self) -> RpcResult<BTreeMap<String, usize>>;
         }
+
+        target self.rpc_impl {
+            fn send_transaction(&self, tx: SendTxRequest, password: Option<String>) -> RpcResult<RpcH256>;
+        }
     }
 
     not_supported! {
         fn current_sync_phase(&self) -> RpcResult<String>;
+        fn consensus_graph_state(&self) -> RpcResult<ConsensusGraphStates>;
+        fn sync_graph_state(&self) -> RpcResult<SyncGraphStates>;
     }
 }

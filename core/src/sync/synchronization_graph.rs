@@ -8,11 +8,14 @@ use crate::{
     error::{BlockError, Error, ErrorKind},
     machine::new_machine_with_builtin,
     pow::ProofOfWorkConfig,
+    state_exposer::{SyncGraphBlockState, STATE_EXPOSER},
     statistics::SharedStatistics,
     verification::*,
 };
 use cfx_types::{H256, U256};
-use metrics::{register_meter_with_group, Meter, MeterTimer};
+use metrics::{
+    register_meter_with_group, register_queue, Meter, MeterTimer, Queue,
+};
 use parking_lot::{Mutex, RwLock};
 use primitives::{
     transaction::SignedTransaction, Block, BlockHeader, EpochNumber,
@@ -36,6 +39,8 @@ lazy_static! {
         register_meter_with_group("timer", "sync::insert_block_header");
     static ref SYNC_INSERT_BLOCK: Arc<dyn Meter> =
         register_meter_with_group("timer", "sync::insert_block");
+    static ref CONSENSUS_WORKER_QUEUE: Arc<dyn Queue> =
+        register_queue("consensus_worker_queue");
 }
 
 const NULL: usize = !0;
@@ -44,6 +49,11 @@ const BLOCK_HEADER_ONLY: u8 = 1;
 const BLOCK_HEADER_PARENTAL_TREE_READY: u8 = 2;
 const BLOCK_HEADER_GRAPH_READY: u8 = 3;
 const BLOCK_GRAPH_READY: u8 = 4;
+
+#[derive(Copy, Clone)]
+pub struct SyncGraphConfig {
+    pub enable_state_expose: bool,
+}
 
 #[derive(Debug)]
 pub struct SyncGraphStatistics {
@@ -128,6 +138,7 @@ pub struct SynchronizationGraphInner {
     children_by_hash: HashMap<H256, Vec<usize>>,
     referrers_by_hash: HashMap<H256, Vec<usize>>,
     pub pow_config: ProofOfWorkConfig,
+    pub config: SyncGraphConfig,
     /// The indices of blocks whose graph_status is not GRAPH_READY.
     /// It may consider not header-graph-ready in phases
     /// `CatchUpRecoverBlockHeaderFromDB` and `CatchUpSyncBlockHeader`.
@@ -142,7 +153,7 @@ pub struct SynchronizationGraphInner {
 impl SynchronizationGraphInner {
     pub fn with_genesis_block(
         genesis_header: Arc<BlockHeader>, pow_config: ProofOfWorkConfig,
-        data_man: Arc<BlockDataManager>,
+        config: SyncGraphConfig, data_man: Arc<BlockDataManager>,
     ) -> Self
     {
         let mut inner = SynchronizationGraphInner {
@@ -153,6 +164,7 @@ impl SynchronizationGraphInner {
             children_by_hash: HashMap::new(),
             referrers_by_hash: HashMap::new(),
             pow_config,
+            config,
             not_ready_blocks_frontier: UnreadyBlockFrontier::new(),
             not_ready_blocks_count: 0,
             old_era_blocks_frontier: Default::default(),
@@ -576,9 +588,7 @@ impl SynchronizationGraphInner {
         me
     }
 
-    pub fn block_older_than_checkpoint(&self, _hash: &H256) -> bool { false }
-
-    pub fn new_to_be_header_parental_tree_ready(&self, index: usize) -> bool {
+    fn new_to_be_header_parental_tree_ready(&self, index: usize) -> bool {
         let ref node_me = self.arena[index];
         if node_me.graph_status >= BLOCK_HEADER_PARENTAL_TREE_READY {
             return false;
@@ -591,7 +601,7 @@ impl SynchronizationGraphInner {
                     >= BLOCK_HEADER_PARENTAL_TREE_READY)
     }
 
-    pub fn new_to_be_header_graph_ready(&self, index: usize) -> bool {
+    fn new_to_be_header_graph_ready(&self, index: usize) -> bool {
         let ref node_me = self.arena[index];
         if node_me.graph_status >= BLOCK_HEADER_GRAPH_READY {
             return false;
@@ -610,7 +620,7 @@ impl SynchronizationGraphInner {
             })
     }
 
-    pub fn new_to_be_block_graph_ready(&self, index: usize) -> bool {
+    fn new_to_be_block_graph_ready(&self, index: usize) -> bool {
         let ref node_me = self.arena[index];
         if !node_me.block_ready {
             return false;
@@ -911,7 +921,7 @@ impl SynchronizationGraph {
     pub fn new(
         consensus: SharedConsensusGraph,
         verification_config: VerificationConfig, pow_config: ProofOfWorkConfig,
-        is_full_node: bool,
+        config: SyncGraphConfig, is_full_node: bool,
     ) -> Self
     {
         let data_man = consensus.data_man.clone();
@@ -920,6 +930,7 @@ impl SynchronizationGraph {
             SynchronizationGraphInner::with_genesis_block(
                 Arc::new(data_man.genesis_block().block_header.clone()),
                 pow_config,
+                config,
                 data_man.clone(),
             ),
         ));
@@ -944,6 +955,7 @@ impl SynchronizationGraph {
             .spawn(move || loop {
                 match consensus_receiver.recv() {
                     Ok((hash, ignore_body)) => {
+                        CONSENSUS_WORKER_QUEUE.dequeue(1);
                         consensus.on_new_block(&hash, ignore_body)
                     }
                     Err(_) => break,
@@ -979,7 +991,7 @@ impl SynchronizationGraph {
             .set_to_be_propagated_transactions(transactions);
     }
 
-    fn try_remove_old_era_blocks_from_disk(&self) {
+    pub fn try_remove_old_era_blocks_from_disk(&self) {
         let mut num_of_blocks_to_remove = 2;
         while let Some(hash) = self.consensus.retrieve_old_era_blocks() {
             // only full node should remove blocks in old eras
@@ -1261,6 +1273,7 @@ impl SynchronizationGraph {
                         );
                     }
                     if insert_to_consensus {
+                        CONSENSUS_WORKER_QUEUE.enqueue(1);
                         self.consensus_sender
                             .lock()
                             .send((
@@ -1416,7 +1429,6 @@ impl SynchronizationGraph {
         }
 
         inner.try_clear_old_era_blocks();
-        self.try_remove_old_era_blocks_from_disk();
 
         (true, need_to_relay)
     }
@@ -1458,10 +1470,28 @@ impl SynchronizationGraph {
         // recovered from db, we can simply ignore body.
         *self.latest_graph_ready_block.lock() = h;
         if !recover_from_db {
+            CONSENSUS_WORKER_QUEUE.enqueue(1);
             self.consensus_sender
                 .lock()
                 .send((h, false /* ignore_body */))
                 .expect("Cannot fail");
+            if inner.config.enable_state_expose {
+                STATE_EXPOSER.sync_graph.lock().ready_block_vec.push(
+                    SyncGraphBlockState {
+                        block_hash: h,
+                        parent: inner.arena[index]
+                            .block_header
+                            .parent_hash()
+                            .clone(),
+                        referees: inner.arena[index]
+                            .block_header
+                            .referee_hashes()
+                            .clone(),
+                        nonce: inner.arena[index].block_header.nonce(),
+                        timestamp: inner.arena[index].block_header.timestamp(),
+                    },
+                );
+            }
         } else {
             self.consensus.on_new_block(&h, true /* ignore_body */);
         }

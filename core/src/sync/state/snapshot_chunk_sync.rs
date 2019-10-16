@@ -5,13 +5,14 @@
 use crate::{
     block_data_manager::ConsensusGraphExecutionInfo,
     parameters::consensus::DEFERRED_STATE_EPOCH_COUNT,
-    storage::{Chunk, ChunkKey, RestoreProgress, Restorer},
     sync::{
         message::{Context, DynamicCapability},
         state::{
+            restore::Restorer,
             snapshot_chunk_request::SnapshotChunkRequest,
             snapshot_manifest_request::SnapshotManifestRequest,
             snapshot_manifest_response::SnapshotManifestResponse,
+            storage::{Chunk, ChunkKey},
         },
         SynchronizationProtocolHandler,
     },
@@ -82,7 +83,6 @@ struct Inner {
 
     // restore
     restorer: Restorer,
-    restore_progress: RestoreProgress,
 }
 
 impl Inner {
@@ -90,7 +90,7 @@ impl Inner {
         self.checkpoint = checkpoint;
         self.trusted_blame_block = trusted_blame_block;
         self.status = Status::DownloadingManifest(Instant::now());
-        self.true_state_root_by_blame_info = H256::new();
+        self.true_state_root_by_blame_info = H256::zero();
         self.state_blame_vec.clear();
         self.receipt_blame_vec.clear();
         self.bloom_blame_vec.clear();
@@ -98,7 +98,6 @@ impl Inner {
         self.downloading_chunks.clear();
         self.num_downloaded = 0;
         self.restorer = Restorer::default();
-        self.restore_progress = RestoreProgress::default();
     }
 }
 
@@ -111,7 +110,7 @@ impl Debug for Inner {
             self.pending_chunks.len(),
             self.downloading_chunks.len(),
             self.num_downloaded,
-            self.restore_progress,
+            self.restorer.progress(),
         )
     }
 }
@@ -226,10 +225,11 @@ impl SnapshotChunkSync {
             }
         }
 
-        inner.pending_chunks.extend(response.manifest.chunks());
+        let next_chunk = response.manifest.next_chunk();
+        inner.pending_chunks.extend(response.manifest.into_chunks());
 
         // continue to request remaining manifest if any
-        if let Some(next_chunk) = response.manifest.next_chunk() {
+        if let Some(next_chunk) = next_chunk {
             let request = SnapshotManifestRequest::new_with_start_chunk(
                 inner.checkpoint.clone(),
                 next_chunk,
@@ -333,7 +333,7 @@ impl SnapshotChunkSync {
         }
 
         inner.num_downloaded += 1;
-        inner.restorer.append(&chunk_key, chunk);
+        inner.restorer.append(chunk_key, chunk);
 
         // continue to request remaining chunks
         self.request_chunk(ctx, &mut inner, ctx.peer);
@@ -362,12 +362,9 @@ impl SnapshotChunkSync {
             _ => return,
         };
 
-        inner.restore_progress = inner.restorer.progress();
-        trace!(
-            "Snapshot chunk restoration progress: {:?}",
-            inner.restore_progress
-        );
-        if !inner.restore_progress.is_completed() {
+        let progress = inner.restorer.progress();
+        trace!("Snapshot chunk restoration progress: {:?}", progress);
+        if !progress.is_completed() {
             return;
         }
 

@@ -1,3 +1,7 @@
+// Copyright 2019 Conflux Foundation. All rights reserved.
+// Conflux is free software and distributed under GNU General Public License.
+// See http://www.gnu.org/licenses/
+
 use crate::{
     ewma::EWMA,
     metrics::{is_enabled, Metric, ORDER},
@@ -222,6 +226,6 @@ impl MeterTimer {
 impl Drop for MeterTimer {
     fn drop(&mut self) {
         self.meter
-            .mark((Instant::now() - self.start).as_micros() as usize)
+            .mark((Instant::now() - self.start).as_nanos() as usize)
     }
 }

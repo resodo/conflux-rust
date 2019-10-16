@@ -3,7 +3,7 @@
 // See http://www.gnu.org/licenses/
 
 use crate::{bytes::Bytes, hash::keccak};
-use cfx_types::{Address, H160, H256, U256};
+use cfx_types::{Address, BigEndianHash, H160, H256, U256};
 use keylib::{
     self, public_to_address, recover, verify_public, Public, Secret, Signature,
 };
@@ -251,6 +251,24 @@ impl Transaction {
         SignedTransaction::new(public, tx_with_sig)
     }
 
+    /// Specify the sender; this won't survive the serialize/deserialize
+    /// process, but can be cloned.
+    pub fn fake_sign(self, from: Address) -> SignedTransaction {
+        SignedTransaction {
+            transaction: TransactionWithSignature {
+                unsigned: self,
+                r: U256::one(),
+                s: U256::one(),
+                v: 0,
+                hash: H256::zero(),
+                rlp_size: None,
+            }
+            .compute_hash(),
+            sender: from,
+            public: None,
+        }
+    }
+
     /// Signs the transaction with signature and chain_id
     pub fn with_signature(
         self, sig: Signature, chain_id: Option<u64>,
@@ -263,7 +281,7 @@ impl Transaction {
                 sig.v() as u64,
                 chain_id,
             ) as u8,
-            hash: 0.into(),
+            hash: H256::zero(),
             rlp_size: None,
         }
         .compute_hash()

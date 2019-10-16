@@ -4,7 +4,7 @@
 
 extern crate cfx_bytes as bytes;
 extern crate core;
-extern crate keylib;
+extern crate ethkey as keylib;
 extern crate network;
 extern crate parking_lot;
 extern crate primitives;
@@ -14,16 +14,17 @@ extern crate secret_store;
 extern crate log;
 
 use crate::bytes::Bytes;
-use cfx_types::{Address, H256, H512, U256, U512};
+use cfx_types::{Address, BigEndianHash, H256, H512, U256, U512};
 use cfxcore::{
     executive::contract_address, vm::CreateContractAddress,
     SharedConsensusGraph, SharedSynchronizationService, SharedTransactionPool,
 };
-use hex::*;
+use hex::FromHex;
 use keylib::{public_to_address, Generator, KeyPair, Random, Secret};
 use lazy_static::lazy_static;
 use metrics::{register_meter_with_group, Meter};
 use network::Error;
+use parity_bytes::ToPretty;
 use parking_lot::RwLock;
 use primitives::{
     transaction::Action, Account, SignedTransaction, Transaction,
@@ -32,8 +33,9 @@ use rand::prelude::*;
 use rlp::Encodable;
 use secret_store::{SecretStore, SharedSecretStore};
 use std::{
+    cmp::Ordering,
     collections::HashMap,
-    str::FromStr,
+    convert::TryFrom,
     sync::Arc,
     thread,
     time::{self, Instant},
@@ -76,7 +78,7 @@ pub struct TransactionGenerator {
     txpool: SharedTransactionPool,
     secret_store: SharedSecretStore,
     state: RwLock<TransGenState>,
-    keypairs: RwLock<HashMap<String, String>>,
+    account_start_index: RwLock<Option<usize>>,
     key_pair: Option<KeyPair>,
 }
 
@@ -95,18 +97,16 @@ impl TransactionGenerator {
             sync,
             secret_store,
             state: RwLock::new(TransGenState::Start),
-            keypairs: RwLock::new(HashMap::new()),
+            account_start_index: RwLock::new(Option::None),
             key_pair,
         }
     }
 
     pub fn stop(&self) { *self.state.write() = TransGenState::Stop; }
 
-    pub fn add_genesis_accounts(&self, key_pairs: HashMap<String, String>) {
-        let mut pairs = self.keypairs.write();
-        for (public_key, secret) in key_pairs.iter() {
-            pairs.insert(public_key.clone(), secret.clone());
-        }
+    pub fn set_genesis_accounts_start_index(&self, index: usize) {
+        let mut account_start = self.account_start_index.write();
+        *account_start = Some(index);
     }
 
     pub fn generate_transaction(&self) -> SignedTransaction {
@@ -144,9 +144,10 @@ impl TransactionGenerator {
 
         let mut balance_to_transfer: U256 = 0.into();
         if sender_balance > 0.into() {
-            balance_to_transfer = U256::from(
-                U512::from(H512::random()) % U512::from(sender_balance),
-            );
+            balance_to_transfer = U256::try_from(
+                H512::random().into_uint() % U512::from(sender_balance),
+            )
+            .unwrap();
         }
 
         let tx = Transaction {
@@ -161,16 +162,16 @@ impl TransactionGenerator {
         r
     }
 
-    pub fn generate_transactions_with_mutiple_genesis_accounts(
+    pub fn generate_transactions_with_multiple_genesis_accounts(
         txgen: Arc<TransactionGenerator>, tx_config: TransactionGeneratorConfig,
     ) -> Result<(), Error> {
         loop {
-            let pairs = txgen.keypairs.read();
-            if pairs.len() == tx_config.account_count {
+            let account_start = txgen.account_start_index.read();
+            if account_start.is_some() {
                 break;
             }
         }
-        let keypairs = txgen.keypairs.read();
+        let account_start_index = txgen.account_start_index.read().unwrap();
         let mut nonce_map: HashMap<Address, U256> = HashMap::new();
         let mut balance_map: HashMap<Address, U256> = HashMap::new();
         let mut address_secret_pair: HashMap<Address, Secret> = HashMap::new();
@@ -195,20 +196,17 @@ impl TransactionGenerator {
         }
 
         debug!("Setup Usable Genesis Accounts");
-        let mut state = txgen.consensus.get_best_state();
-        for (public_key, secret) in keypairs.iter() {
-            let address = Address::from_str(public_key).unwrap();
-            let secret = Secret::from_str(secret).unwrap();
+        let state = txgen.consensus.get_best_state();
+        for i in 0..tx_config.account_count {
+            let key_pair =
+                txgen.secret_store.get_keypair(account_start_index + i);
+            let address = key_pair.address();
+            let secret = key_pair.secret().clone();
             addresses.push(address);
             nonce_map.insert(address.clone(), 0.into());
 
-            let mut balance = state.balance(&address).ok();
-            while balance.is_none() || balance.clone().unwrap() == 0.into() {
-                debug!("WARN: Sender Balance is None for public key ={:?}, wait new state", public_key);
-                thread::sleep(Duration::from_millis(1));
-                state = txgen.consensus.get_best_state();
-                balance = state.balance(&address).ok();
-            }
+            let balance = state.balance(&address).ok();
+
             balance_map.insert(address.clone(), balance.unwrap());
             address_secret_pair.insert(address, secret);
         }
@@ -240,6 +238,12 @@ impl TransactionGenerator {
             // Generate nonce for the transaction
             let sender_nonce = nonce_map.get_mut(&sender_address).unwrap();
 
+            let (nonce, balance) =
+                txgen.txpool.get_state_account_info(&sender_address);
+            if nonce.cmp(sender_nonce) != Ordering::Equal {
+                *sender_nonce = nonce.clone();
+                balance_map.insert(sender_address.clone(), balance.clone());
+            }
             trace!(
                 "receiver={:?} value={:?} nonce={:?}",
                 receiver_address,
@@ -262,7 +266,7 @@ impl TransactionGenerator {
             let mut tx_to_insert = Vec::new();
             tx_to_insert.push(signed_tx.transaction);
             let (txs, fail) =
-                txgen.txpool.insert_new_transactions(&tx_to_insert);
+                txgen.txpool.insert_new_transactions(tx_to_insert);
             if fail.len() == 0 {
                 txgen.sync.append_received_transactions(txs);
                 //tx successfully inserted into
@@ -398,7 +402,7 @@ impl TransactionGenerator {
                 let mut tx_to_insert = Vec::new();
                 tx_to_insert.push(signed_tx.transaction);
                 let (txs, _) =
-                    txgen.txpool.insert_new_transactions(&tx_to_insert);
+                    txgen.txpool.insert_new_transactions(tx_to_insert);
                 txgen.sync.append_received_transactions(txs);
                 last_account = Some(receiver_address);
                 TX_GEN_METER.mark(1);
@@ -446,6 +450,7 @@ impl TransactionGenerator {
             let balance_to_transfer = U256::from(0);
             // Generate nonce for the transaction
             let sender_nonce = nonce_map.get_mut(&sender_kp.address()).unwrap();
+
             let receiver_address = public_to_address(receiver_kp.public());
             trace!(
                 "receiver={:?} value={:?} nonce={:?}",
@@ -469,7 +474,7 @@ impl TransactionGenerator {
             let mut tx_to_insert = Vec::new();
             tx_to_insert.push(signed_tx.transaction);
             let (txs, fail) =
-                txgen.txpool.insert_new_transactions(&tx_to_insert);
+                txgen.txpool.insert_new_transactions(tx_to_insert);
             if fail.len() == 0 {
                 txgen.sync.append_received_transactions(txs);
                 // tx successfully inserted into tx pool, so we can update our
@@ -556,8 +561,8 @@ impl SpecialTransactionGenerator {
             erc20_address
         );
         assert_eq!(
-            erc20_address.hex(),
-            "0xe2182fba747b5706a516d6cf6bf62d6117ef86ea"
+            erc20_address.to_hex(),
+            "e2182fba747b5706a516d6cf6bf62d6117ef86ea"
         );
 
         SpecialTransactionGenerator {
@@ -600,9 +605,10 @@ impl SpecialTransactionGenerator {
                 continue;
             }
 
-            let balance_to_transfer = U256::from(
-                U512::from(H512::random()) % U512::from(sender_balance),
-            );
+            let balance_to_transfer = U256::try_from(
+                H512::random().into_uint() % U512::from(sender_balance),
+            )
+            .unwrap();
 
             let is_send_to_new_address = (number_of_accounts
                 <= Self::MAX_TOTAL_ACCOUNTS)
@@ -696,10 +702,11 @@ impl SpecialTransactionGenerator {
             let balance_to_transfer = if sender_erc20_balance == 0.into() {
                 continue;
             } else {
-                U256::from(
-                    U512::from(H512::random())
+                U256::try_from(
+                    H512::random().into_uint()
                         % U512::from(sender_erc20_balance),
                 )
+                .unwrap()
             };
 
             let receiver_index = random::<usize>() % number_of_accounts;
@@ -714,8 +721,12 @@ impl SpecialTransactionGenerator {
             let tx_data = Vec::from_hex(
                 String::new()
                     + "a9059cbb000000000000000000000000"
-                    + &receiver_address.hex()[2..]
-                    + &H256::from(balance_to_transfer).hex()[2..],
+                    + &receiver_address.to_hex()[2..]
+                    + {
+                        let h: H256 =
+                            BigEndianHash::from_uint(&balance_to_transfer);
+                        &h.to_hex()[2..]
+                    },
             )
             .unwrap();
 

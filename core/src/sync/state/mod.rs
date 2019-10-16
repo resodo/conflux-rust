@@ -2,11 +2,13 @@
 // Conflux is free software and distributed under GNU General Public License.
 // See http://www.gnu.org/licenses/
 
+mod restore;
 mod snapshot_chunk_request;
 mod snapshot_chunk_response;
 mod snapshot_chunk_sync;
 mod snapshot_manifest_request;
 mod snapshot_manifest_response;
+mod storage;
 
 pub use self::{
     snapshot_chunk_request::SnapshotChunkRequest,
@@ -14,4 +16,5 @@ pub use self::{
     snapshot_chunk_sync::{SnapshotChunkSync, Status},
     snapshot_manifest_request::SnapshotManifestRequest,
     snapshot_manifest_response::SnapshotManifestResponse,
+    storage::RangedManifest,
 };

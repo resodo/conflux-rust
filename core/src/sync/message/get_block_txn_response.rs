@@ -71,10 +71,20 @@ impl Handleable for GetBlockTxnResponse {
                         }
                     }
                     // FIXME Should check if hash matches
-
+                    let block = Block::new(header, trans);
+                    debug!(
+                        "transaction received by block: ratio={:?}",
+                        self.block_txn.len() as f64
+                            / block.transactions.len() as f64
+                    );
+                    debug!(
+                        "new block received: block_header={:?}, tx_count={}, block_size={}",
+                        block.block_header,
+                        block.transactions.len(),
+                        block.size(),
+                    );
                     let (success, to_relay) = ctx.manager.graph.insert_block(
-                        Block::new(header, trans),
-                        true,  // need_to_verify
+                        block, true,  // need_to_verify
                         true,  // persistent
                         false, // recover_from_db
                     );

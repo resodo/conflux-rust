@@ -15,7 +15,7 @@ use crate::{
 };
 use cfx_types::{Address, H256, U256, U512};
 use primitives::{transaction::Action, SignedTransaction};
-use std::{cmp, sync::Arc};
+use std::{cmp, convert::TryFrom, sync::Arc};
 //use crate::storage::{Storage, StorageTrait};
 //use crate::transaction_pool::SharedTransactionPool;
 use crate::{
@@ -966,6 +966,25 @@ impl<'a, 'b> Executive<'a, 'b> {
         self.call_with_stack_depth(params, substate, 0)
     }
 
+    pub fn transact_virtual(
+        &mut self, tx: &SignedTransaction,
+    ) -> ExecutionResult<Executed> {
+        let sender = tx.sender();
+        let balance = self.state.balance(&sender)?;
+        let needed_balance =
+            tx.value.saturating_add(tx.gas.saturating_mul(tx.gas_price));
+        if balance < needed_balance {
+            // give the sender a sufficient balance
+            self.state.add_balance(
+                &sender,
+                &(needed_balance - balance),
+                CleanupMode::NoEmpty,
+            )?;
+        }
+        let mut nonce_increased = false;
+        self.transact(tx, &mut nonce_increased)
+    }
+
     pub fn transact(
         &mut self, tx: &SignedTransaction, nonce_increased: &mut bool,
         eth_compatibility_mode: bool,
@@ -1047,7 +1066,7 @@ impl<'a, 'b> Executive<'a, 'b> {
             };
             self.state.sub_balance(
                 &sender,
-                &U256::from(actual_cost),
+                &U256::try_from(actual_cost).unwrap(),
                 &mut substate.to_cleanup_mode(&spec),
             )?;
             return Err(ExecutionError::NotEnoughCash {
@@ -1058,7 +1077,7 @@ impl<'a, 'b> Executive<'a, 'b> {
 
         self.state.sub_balance(
             &sender,
-            &U256::from(gas_cost),
+            &U256::try_from(gas_cost).unwrap(),
             &mut substate.to_cleanup_mode(&spec),
         )?;
 
@@ -1265,7 +1284,7 @@ mod tests {
             get_state_for_genesis_write_with_factory,
         },
     };
-    use cfx_types::{Address, H256, U256, U512};
+    use cfx_types::{Address, BigEndianHash, H256, U256, U512};
     use keylib::{Generator, Random};
     use primitives::Transaction;
     use rustc_hex::FromHex;
@@ -1336,8 +1355,8 @@ mod tests {
 
         assert_eq!(gas_left, U256::from(79_595));
         assert_eq!(
-            state.storage_at(&address, &H256::new()).unwrap(),
-            H256::from(&U256::from(0xf9u64))
+            state.storage_at(&address, &H256::zero()).unwrap(),
+            BigEndianHash::from_uint(&U256::from(0xf9u64))
         );
         assert_eq!(state.balance(&sender).unwrap(), U256::from(0xf9));
         assert_eq!(state.balance(&address).unwrap(), U256::from(0x7));
@@ -1504,7 +1523,9 @@ mod tests {
                 CleanupMode::NoEmpty,
             )
             .unwrap();
-        state.commit(H256::from(U256::from(1))).unwrap();
+        state
+            .commit(BigEndianHash::from_uint(&U256::from(1)))
+            .unwrap();
 
         let mut params = ActionParams::default();
         params.address = contract_address.clone();
@@ -1534,9 +1555,12 @@ mod tests {
         assert_eq!(output[..], returns[..]);
         assert_eq!(
             state
-                .storage_at(&contract_address, &H256::from(&U256::zero()))
+                .storage_at(
+                    &contract_address,
+                    &BigEndianHash::from_uint(&U256::zero())
+                )
                 .unwrap(),
-            H256::from(&U256::from(0))
+            BigEndianHash::from_uint(&U256::from(0))
         );
     }
 

@@ -2,7 +2,11 @@
 // Conflux is free software and distributed under GNU General Public License.
 // See http://www.gnu.org/licenses/
 
-use super::super::types::{Transaction as RpcTransaction, H256 as RpcH256};
+use super::super::types::{
+    ConsensusGraphStates, SyncGraphStates, Transaction as RpcTransaction,
+    H256 as RpcH256,
+};
+use crate::rpc::types::SendTxRequest;
 use jsonrpc_core::Result as RpcResult;
 use jsonrpc_derive::rpc;
 use network::{
@@ -55,9 +59,17 @@ pub trait DebugRpc {
         &self, node_id: Option<NodeId>,
     ) -> RpcResult<Vec<SessionDetails>>;
 
-    #[rpc(name = "net_high_priority_packets")]
-    fn net_high_priority_packets(&self) -> RpcResult<usize>;
-
     #[rpc(name = "current_sync_phase")]
     fn current_sync_phase(&self) -> RpcResult<String>;
+
+    #[rpc(name = "consensus_graph_state")]
+    fn consensus_graph_state(&self) -> RpcResult<ConsensusGraphStates>;
+
+    #[rpc(name = "sync_graph_state")]
+    fn sync_graph_state(&self) -> RpcResult<SyncGraphStates>;
+
+    #[rpc(name = "send_transaction")]
+    fn send_transaction(
+        &self, tx: SendTxRequest, password: Option<String>,
+    ) -> RpcResult<RpcH256>;
 }
