@@ -94,5 +94,6 @@ class MessageTest(ConfluxTestFramework):
         p2p.send_packet(PACKET_PROTOCOL, b"")
         wait_until(lambda: p2p.state != "connected", timeout=3)
 
+
 if __name__ == "__main__":
     MessageTest().main()

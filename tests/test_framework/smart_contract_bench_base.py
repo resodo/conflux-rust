@@ -4,7 +4,7 @@ from http.client import CannotSendRequest
 from eth_utils import decode_hex
 
 from conflux.rpc import RpcClient
-from conflux.utils import ec_random_keys, privtoaddr
+from conflux.utils import privtoaddr
 from test_framework.block_gen_thread import BlockGenThread
 from test_framework.blocktools import create_transaction
 from test_framework.mininode import *
@@ -65,14 +65,14 @@ class SmartContractBenchBase(ConfluxTestFramework):
         return self.nonce_map[sender]
 
     def call_contract_function(
-        self,
-        contract,
-        name,
-        args,
-        sender_key,
-        contract_addr=None,
-        wait=False,
-        check_status=False,
+            self,
+            contract,
+            name,
+            args,
+            sender_key,
+            contract_addr=None,
+            wait=False,
+            check_status=False,
     ):
         # If contract address is empty, call the constructor.
         if contract_addr:
@@ -100,7 +100,7 @@ class SmartContractBenchBase(ConfluxTestFramework):
         return transaction
 
     def new_address_and_transfer(
-        self, count=1, amount=100000000000000, wait=False, check_status=False
+            self, count=1, amount=100000000000000, wait=False, check_status=False
     ):
         results = []
         for _ in range(count):

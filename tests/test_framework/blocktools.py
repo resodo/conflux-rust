@@ -13,18 +13,18 @@ HASH_MAX = 1 << 256
 
 
 def create_block(
-    parent_hash=default_config["GENESIS_PREVHASH"],
-    height=0,
-    timestamp=None,
-    difficulty=TEST_DIFFICULTY,
-    transactions=[],
-    gas_limit=3000000000,
-    referee_hashes=[],
-    author=default_config["GENESIS_COINBASE"],
-    deferred_state_root=default_config["GENESIS_STATE_ROOT"],
-    deferred_receipts_root=default_config["GENESIS_RECEIPTS_ROOT"],
-    deferred_logs_bloom_hash=default_config["GENESIS_LOGS_BLOOM_HASH"],
-    adaptive=0,
+        parent_hash=default_config["GENESIS_PREVHASH"],
+        height=0,
+        timestamp=None,
+        difficulty=TEST_DIFFICULTY,
+        transactions=[],
+        gas_limit=3000000000,
+        referee_hashes=[],
+        author=default_config["GENESIS_COINBASE"],
+        deferred_state_root=default_config["GENESIS_STATE_ROOT"],
+        deferred_receipts_root=default_config["GENESIS_RECEIPTS_ROOT"],
+        deferred_logs_bloom_hash=default_config["GENESIS_LOGS_BLOOM_HASH"],
+        adaptive=0,
 ):
     if timestamp is None:
         timestamp = int(time.time())
@@ -89,16 +89,16 @@ def create_block_with_nonce(
 
 
 def create_transaction(
-    nonce=0,
-    gas_price=1,
-    gas=21000,
-    value=0,
-    receiver=default_config["GENESIS_COINBASE"],
-    data=b"",
-    v=0,
-    r=0,
-    s=0,
-    pri_key=default_config["GENESIS_PRI_KEY"],
+        nonce=0,
+        gas_price=1,
+        gas=21000,
+        value=0,
+        receiver=default_config["GENESIS_COINBASE"],
+        data=b"",
+        v=0,
+        r=0,
+        s=0,
+        pri_key=default_config["GENESIS_PRI_KEY"],
 ):
     transaction = Transaction(nonce, gas_price, gas, receiver, value, data, v, r, s)
     return transaction.sign(pri_key)

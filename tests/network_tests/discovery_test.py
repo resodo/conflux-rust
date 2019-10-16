@@ -46,7 +46,7 @@ class AutoDiscovery(ConfluxTestFramework):
         self.log.info("Test AutoDiscovery")
         wait_until(
             lambda: [len(i.getpeerinfo()) for i in self.nodes].count(self.num_nodes - 1)
-            == self.num_nodes
+                    == self.num_nodes
         )
         self.log.info("Passed")
 

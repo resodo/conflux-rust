@@ -96,8 +96,8 @@ class TxRelayTest(ConfluxTestFramework):
         self.log.info(f"Retrieving txs through light node...")
 
         for (hash, _, _) in txs:
-            self.check_tx(hash)      # cfx_getTransactionByHash
-            self.check_receipt(hash) # cfx_getTransactionReceipt
+            self.check_tx(hash)  # cfx_getTransactionByHash
+            self.check_receipt(hash)  # cfx_getTransactionReceipt
             self.log.info(f"tx {hash} correct")
 
         self.log.info(f"Pass 2 - all txs retrieved\n")

@@ -271,8 +271,8 @@ def initialize_datadir(dirname, n, conf_parameters):
             "enable_discovery": "false",
             "metrics_output_file": "'{}'".format(os.path.join(datadir, "metrics.log")),
             "metrics_enabled": "true",
-        # "block_db_type": "\'sqlite\'"
-                      }
+            # "block_db_type": "\'sqlite\'"
+        }
         for k in conf_parameters:
             local_conf[k] = conf_parameters[k]
         for k in local_conf:
@@ -303,12 +303,12 @@ def get_auth_cookie(datadir):
                     user = line.split("=")[1].strip("\n")
                 if line.startswith("rpcpassword="):
                     assert (
-                        password is None
+                            password is None
                     )  # Ensure that there is only one rpcpassword line
                     password = line.split("=")[1].strip("\n")
     if os.path.isfile(os.path.join(datadir, "regtest", ".cookie")):
         with open(
-            os.path.join(datadir, "regtest", ".cookie"), "r", encoding="ascii"
+                os.path.join(datadir, "regtest", ".cookie"), "r", encoding="ascii"
         ) as f:
             userpass = f.read()
             split_userpass = userpass.split(":")
@@ -354,20 +354,20 @@ def disconnect_nodes(nodes, from_connection, node_num):
     # wait to disconnect
     wait_until(
         lambda: [
-            peer
-            for peer in nodes[from_connection].getpeerinfo()
-            if peer["nodeid"] == nodes[node_num].key
-        ]
-        == [],
+                    peer
+                    for peer in nodes[from_connection].getpeerinfo()
+                    if peer["nodeid"] == nodes[node_num].key
+                ]
+                == [],
         timeout=5,
     )
     wait_until(
         lambda: [
-            peer
-            for peer in nodes[node_num].getpeerinfo()
-            if peer["nodeid"] == nodes[from_connection].key
-        ]
-        == [],
+                    peer
+                    for peer in nodes[node_num].getpeerinfo()
+                    if peer["nodeid"] == nodes[from_connection].key
+                ]
+                == [],
         timeout=5,
     )
 
@@ -415,7 +415,7 @@ def sync_blocks(rpc_connections, *, sync_count=True, wait=1, timeout=60):
         best_hash = [x.best_block_hash() for x in rpc_connections]
         block_count = [x.getblockcount() for x in rpc_connections]
         if best_hash.count(best_hash[0]) == len(rpc_connections) and (
-            not sync_count or block_count.count(block_count[0]) == len(rpc_connections)
+                not sync_count or block_count.count(block_count[0]) == len(rpc_connections)
         ):
             return
         time.sleep(wait)
@@ -521,10 +521,10 @@ def p2p_port(n):
 
 def rpc_port(n):
     return (
-        PORT_MIN
-        + PORT_RANGE
-        + n * 2
-        + (MAX_NODES * PortSeed.n) % (PORT_RANGE - 1 - MAX_NODES)
+            PORT_MIN
+            + PORT_RANGE
+            + n * 2
+            + (MAX_NODES * PortSeed.n) % (PORT_RANGE - 1 - MAX_NODES)
     )
 
 
@@ -551,7 +551,7 @@ def checktx(node, tx_hash):
 
 
 def connect_sample_nodes(
-    nodes, log, sample=3, latency_min=0, latency_max=300, timeout=30
+        nodes, log, sample=3, latency_min=0, latency_max=300, timeout=30
 ):
     """
     Establish connections among nodes with each node having 'sample' outgoing peers.

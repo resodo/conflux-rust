@@ -37,7 +37,7 @@ with open(latency_stat_file, "r", encoding="utf-8") as fp:
             if fields[2] == "Avg":
                 tags.append(fields[1].replace("_", "\n"))
             elif "block broadcast latency" in fields[1] and (
-                "/P90)" in fields[1] or "/P95)" in fields[1] or "/P99)" in fields[1]
+                    "/P90)" in fields[1] or "/P95)" in fields[1] or "/P99)" in fields[1]
             ):
                 metric = parse_value(fields[1], "block broadcast latency (", ")")
                 if not latencies.get(metric):
@@ -46,8 +46,8 @@ with open(latency_stat_file, "r", encoding="utf-8") as fp:
 
 chart = (
     Line()
-    .add_xaxis(tags)
-    .set_global_opts(
+        .add_xaxis(tags)
+        .set_global_opts(
         title_opts=opts.TitleOpts(title="Block Broadcast Latency (Average)"),
         legend_opts=opts.LegendOpts(
             orient="vertical", pos_left="right", pos_top="middle"

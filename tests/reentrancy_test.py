@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 
-from conflux.utils import privtoaddr, parse_as_int
+from easysolc import Solc
+from eth_utils import decode_hex
+from web3 import Web3
+
 from conflux.rpc import RpcClient
-from test_framework.util import *
+from conflux.utils import privtoaddr, parse_as_int
+from test_framework.block_gen_thread import BlockGenThread
+from test_framework.blocktools import create_transaction
 from test_framework.mininode import *
 from test_framework.test_framework import ConfluxTestFramework
-from test_framework.blocktools import create_transaction
-from test_framework.block_gen_thread import BlockGenThread
-from eth_utils import decode_hex
-from easysolc import Solc
-from web3 import Web3
+from test_framework.util import *
+
 
 class ReentrancyTest(ConfluxTestFramework):
     REQUEST_BASE = {
@@ -83,7 +85,7 @@ class ReentrancyTest(ConfluxTestFramework):
             func = getattr(contract, name)
         attrs = {
             'nonce': self.get_nonce(privtoaddr(sender_key)),
-            ** ReentrancyTest.REQUEST_BASE
+            **ReentrancyTest.REQUEST_BASE
         }
         if contract_addr:
             attrs['receiver'] = decode_hex(contract_addr)
@@ -114,7 +116,7 @@ class ReentrancyTest(ConfluxTestFramework):
         file_dir = os.path.dirname(os.path.realpath(__file__))
 
         self.log.info("Initializing contract")
-       
+
         self.buggy_contract = solc.get_contract_instance(
             source=os.path.join(file_dir, "contracts/reentrancy.sol"),
             contract_name="Reentrance")
@@ -163,9 +165,12 @@ class ReentrancyTest(ConfluxTestFramework):
         transaction = self.call_contract_function(self.exploit_contract, "constructor", [], user2)
         exploit_addr = self.wait_for_tx([transaction], True)[0]['contractCreated']
 
-        transaction = self.call_contract_function(self.buggy_contract, "addBalance", [], user1, 100000000000000000000000000000000,
+        transaction = self.call_contract_function(self.buggy_contract, "addBalance", [], user1,
+                                                  100000000000000000000000000000000,
                                                   contract_addr, True, True)
-        transaction = self.call_contract_function(self.exploit_contract, "deposit", [Web3.toChecksumAddress(contract_addr)], user2, 100000000000000000000000000000000,
+        transaction = self.call_contract_function(self.exploit_contract, "deposit",
+                                                  [Web3.toChecksumAddress(contract_addr)], user2,
+                                                  100000000000000000000000000000000,
                                                   exploit_addr, True, True)
 
         addr = eth_utils.encode_hex(user1_addr)
@@ -192,6 +197,7 @@ class ReentrancyTest(ConfluxTestFramework):
 
         block_gen_thread.stop()
         block_gen_thread.join()
+
 
 if __name__ == '__main__':
     ReentrancyTest().main()

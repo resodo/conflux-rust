@@ -43,14 +43,14 @@ def treeSize(t, node, subtree):
 
 
 def compute_latency(
-    parents,
-    refs,
-    final_block,
-    g_time,
-    r_time,
-    lambda_n=4,
-    risk=0.0001,
-    adversary_power=0.2,
+        parents,
+        refs,
+        final_block,
+        g_time,
+        r_time,
+        lambda_n=4,
+        risk=0.0001,
+        adversary_power=0.2,
 ):
     r = risk
     # q = adversary_power / (1 - adversary_power)

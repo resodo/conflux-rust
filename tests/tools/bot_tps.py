@@ -20,7 +20,7 @@ DRIPS_PER_CFX = 10 ** 18
 
 class Sender:
     def __init__(
-        self, client: RpcClient, addr: str, priv_key_hex: str, balance: int, nonce: int
+            self, client: RpcClient, addr: str, priv_key_hex: str, balance: int, nonce: int
     ):
         self.client = client
         self.addr = addr
@@ -130,11 +130,11 @@ def new_client(rpc_url):
 
 
 def work(
-    faucet_addr,
-    faucet_priv_key_hex,
-    rpc_urls: list,
-    num_threads: int,
-    num_receivers: int,
+        faucet_addr,
+        faucet_priv_key_hex,
+        rpc_urls: list,
+        num_threads: int,
+        num_receivers: int,
 ):
     # init faucet
     print("Initialize faucet ...")

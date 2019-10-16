@@ -206,22 +206,22 @@ class BlockHeader(rlp.Serializable):
     ]
 
     def __init__(
-        self,
-        parent_hash=default_config["GENESIS_PREVHASH"],
-        height=0,
-        timestamp=0,
-        author=default_config["GENESIS_COINBASE"],
-        transactions_root=trie.BLANK_ROOT,
-        deferred_state_root=sha3(rlp.encode(trie.state_root())),
-        deferred_receipts_root=trie.BLANK_ROOT,
-        deferred_logs_bloom_hash=default_config["GENESIS_LOGS_BLOOM_HASH"],
-        blame=0,
-        difficulty=default_config["GENESIS_DIFFICULTY"],
-        gas_limit=0,
-        referee_hashes=[],
-        adaptive=0,
-        nonce=0,
-        state_root_with_aux_info=[trie.state_root(), [trie.NULL_ROOT, trie.NULL_ROOT]],
+            self,
+            parent_hash=default_config["GENESIS_PREVHASH"],
+            height=0,
+            timestamp=0,
+            author=default_config["GENESIS_COINBASE"],
+            transactions_root=trie.BLANK_ROOT,
+            deferred_state_root=sha3(rlp.encode(trie.state_root())),
+            deferred_receipts_root=trie.BLANK_ROOT,
+            deferred_logs_bloom_hash=default_config["GENESIS_LOGS_BLOOM_HASH"],
+            blame=0,
+            difficulty=default_config["GENESIS_DIFFICULTY"],
+            gas_limit=0,
+            referee_hashes=[],
+            adaptive=0,
+            nonce=0,
+            state_root_with_aux_info=[trie.state_root(), [trie.NULL_ROOT, trie.NULL_ROOT]],
     ):
         # at the beginning of a method, locals() is a dict of all arguments
         fields = {k: v for k, v in locals().items() if k not in ["self", "__class__"]}

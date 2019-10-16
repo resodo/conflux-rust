@@ -75,7 +75,7 @@ class P2PConnection(asyncore.dispatcher):
         """asyncore callback when a connection is closed."""
         logger.info("Closing connection to: %s:%d" % (self.dstaddr, self.dstport))
         self.state = "closed"
-        assert False
+        # assert False
         self.recvbuf = b""
         self.sendbuf = b""
         # assert False
@@ -164,9 +164,9 @@ class P2PConnection(asyncore.dispatcher):
                 self._log_message("receive", packet_id)
 
                 if (
-                    packet_id != PACKET_HELLO
-                    and packet_id != PACKET_DISCONNECT
-                    and (not self.had_hello)
+                        packet_id != PACKET_HELLO
+                        and packet_id != PACKET_DISCONNECT
+                        and (not self.had_hello)
                 ):
                     raise ValueError("bad protocol")
 
@@ -303,9 +303,9 @@ class P2PInterface(P2PConnection):
         self.priv_key, self.pub_key = ec_random_keys()
         x, y = self.pub_key
         self.key = (
-            "0x"
-            + encode_hex(bytes(int_to_32bytearray(x)))[2:]
-            + encode_hex(bytes(int_to_32bytearray(y)))[2:]
+                "0x"
+                + encode_hex(bytes(int_to_32bytearray(x)))[2:]
+                + encode_hex(bytes(int_to_32bytearray(y)))[2:]
         )
         self.had_status = False
         self.on_packet_func = {}

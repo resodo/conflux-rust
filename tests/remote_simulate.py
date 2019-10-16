@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import csv
+import os
 import tarfile
 from argparse import ArgumentParser
 from collections import Counter
@@ -12,10 +12,6 @@ from scripts.stat_latency_map_reduce import Statistics
 from test_framework.mininode import *
 from test_framework.test_framework import ConfluxTestFramework
 from test_framework.util import *
-from scripts.stat_latency_map_reduce import Statistics
-from scripts.exp_latency import pscp, pssh, kill_remote_conflux
-import csv
-import os
 
 
 class RemoteSimulate(ConfluxTestFramework):
@@ -231,7 +227,7 @@ class RemoteSimulate(ConfluxTestFramework):
             self.options.tmpdir,
             p2p_port(0),
             self.options.nodes_per_host,
-            self.options.bandwidth,str(self.options.flamegraph_enabled).lower()
+            self.options.bandwidth, str(self.options.flamegraph_enabled).lower()
         )
         cmd = "{}; {} && {} && {}".format(
             cmd_kill_conflux, cmd_cleanup, cmd_setup, cmd_startup
@@ -264,15 +260,15 @@ class RemoteSimulate(ConfluxTestFramework):
         num_nodes = len(self.nodes)
 
         if self.tx_propagation_enabled:
-            #setup usable accounts
+            # setup usable accounts
 
             start_time = time.time()
-            current_index=1
+            current_index = 1
             for i in range(len(self.nodes)):
                 client = RpcClient(self.nodes[i])
                 client.send_usable_genesis_accounts(current_index)
-                current_index+=self.options.txgen_account_count
-            self.log.info("Time spend (s) on setting up genesis accounts: {}".format(time.time()-start_time))
+                current_index += self.options.txgen_account_count
+            self.log.info("Time spend (s) on setting up genesis accounts: {}".format(time.time() - start_time))
 
         # setup monitor to report the current block count periodically
         cur_block_count = self.nodes[0].getblockcount()
@@ -393,7 +389,7 @@ class RemoteSimulate(ConfluxTestFramework):
             self.log.info("blocks: {}".format(Counter(block_counts)))
 
             if block_counts.count(block_counts[0]) == len(
-                self.nodes
+                    self.nodes
             ) and best_blocks.count(best_blocks[0]) == len(self.nodes):
                 break
 

@@ -18,7 +18,7 @@ for example:
 Note, when URL specified, it should be of format http://ip:port."""
 
 assert (
-    len(sys.argv) > 1
+        len(sys.argv) > 1
 ), "Parameter required: [<url: http://ip:port>] <method_name> [<method_args>*]"
 
 rpc_url = "http://localhost:12537"

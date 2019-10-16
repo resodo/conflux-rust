@@ -64,8 +64,8 @@ class NodeReputationTests(ConfluxTestFramework):
         n = self.connect_nodes(client0, 1)
 
         assert (
-            client0.disconnect_peer(self.nodes[1].key, client0.UPDATE_NODE_OP_FAILURE)
-            == n[1]["streamToken"]
+                client0.disconnect_peer(self.nodes[1].key, client0.UPDATE_NODE_OP_FAILURE)
+                == n[1]["streamToken"]
         )
 
         # Node 1 is still in trusted node table, only marked as failure.
@@ -80,17 +80,17 @@ class NodeReputationTests(ConfluxTestFramework):
         else:
             # Node 1 auto connected by timer, so timestamp changed
             assert (
-                self.compare_node_time(
-                    node[1]["lastConnected"]["success"],
-                    n[1]["lastConnected"]["success"],
-                )
-                == 1
+                    self.compare_node_time(
+                        node[1]["lastConnected"]["success"],
+                        n[1]["lastConnected"]["success"],
+                    )
+                    == 1
             )
             assert (
-                self.compare_node_time(
-                    node[1]["lastContact"]["success"], n[1]["lastContact"]["success"]
-                )
-                == 1
+                    self.compare_node_time(
+                        node[1]["lastContact"]["success"], n[1]["lastContact"]["success"]
+                    )
+                    == 1
             )
 
         # Node 0 still create outgoing connection to Node 1
@@ -101,8 +101,8 @@ class NodeReputationTests(ConfluxTestFramework):
         n = self.connect_nodes(client0, 2)
 
         assert (
-            client0.disconnect_peer(self.nodes[2].key, client0.UPDATE_NODE_OP_DEMOTE)
-            == n[1]["streamToken"]
+                client0.disconnect_peer(self.nodes[2].key, client0.UPDATE_NODE_OP_DEMOTE)
+                == n[1]["streamToken"]
         )
 
         # demote to untrusted node table
@@ -120,8 +120,8 @@ class NodeReputationTests(ConfluxTestFramework):
         n = self.connect_nodes(client0, 3)
 
         assert (
-            client0.disconnect_peer(self.nodes[3].key, client0.UPDATE_NODE_OP_REMOVE)
-            == n[1]["streamToken"]
+                client0.disconnect_peer(self.nodes[3].key, client0.UPDATE_NODE_OP_REMOVE)
+                == n[1]["streamToken"]
         )
 
         # On node 0: node 3 is blacklisted, and cannot immediately add it again

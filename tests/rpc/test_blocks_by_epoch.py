@@ -29,7 +29,7 @@ class TestGetBlocksByEpoch(RpcClient):
         )
 
     def assert_blocks_in_epoch(
-        self, epoch: str, num_blocks: int, block_hashes: list = None
+            self, epoch: str, num_blocks: int, block_hashes: list = None
     ):
         blocks = self.block_hashes_by_epoch(epoch)
         assert_equal(len(blocks), num_blocks)

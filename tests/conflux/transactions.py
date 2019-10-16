@@ -1,6 +1,5 @@
 import eth_utils
 import rlp
-
 # import sender as sender
 from rlp.sedes import big_endian_int, binary
 

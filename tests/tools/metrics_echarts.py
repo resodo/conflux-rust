@@ -113,8 +113,8 @@ def generate_metric_chart(metrics_log_file: str, metric_name: Optional[str] = No
             Line(
                 init_opts=opts.InitOpts(width="1400px", height="700px", page_title=key)
             )
-            .add_xaxis(metric.timestamps)
-            .set_global_opts(title_opts=opts.TitleOpts(title=key))
+                .add_xaxis(metric.timestamps)
+                .set_global_opts(title_opts=opts.TitleOpts(title=key))
         )
 
         metric.add_yaxis(chart)

@@ -67,7 +67,7 @@ class RpcClient:
         return eth_utils.encode_hex(sha3_256(seed))
 
     def generate_block(
-        self, num_txs: int = 0, block_size_limit_bytes: int = 300000
+            self, num_txs: int = 0, block_size_limit_bytes: int = 300000
     ) -> str:
         assert_greater_than_or_equal(num_txs, 0)
         block_hash = self.node.generateoneblock(num_txs, block_size_limit_bytes)
@@ -75,7 +75,7 @@ class RpcClient:
         return block_hash
 
     def generate_blocks(
-        self, num_blocks: int, num_txs: int = 0, block_size_limit_bytes: int = 300000
+            self, num_blocks: int, num_txs: int = 0, block_size_limit_bytes: int = 300000
     ) -> list:
         assert_greater_than(num_blocks, 0)
         assert_greater_than_or_equal(num_txs, 0)
@@ -91,7 +91,7 @@ class RpcClient:
         return self.generate_blocks(num_blocks, num_txs)
 
     def generate_block_with_parent(
-        self, parent_hash: str, referee: list, num_txs: int = 0, adaptive: bool = False
+            self, parent_hash: str, referee: list, num_txs: int = 0, adaptive: bool = False
     ) -> str:
         assert_is_hash_string(parent_hash)
 
@@ -152,11 +152,12 @@ class RpcClient:
             return int(self.node.cfx_getBalance(addr, epoch), 0)
 
     ''' Ignore block_hash if epoch is not None '''
+
     def get_nonce(self, addr: str, epoch: str = None, block_hash: str = None) -> int:
         if epoch is None and block_hash is None:
             return int(self.node.cfx_getTransactionCount(addr), 0)
         elif epoch is None:
-            return int(self.node.cfx_getTransactionCount(addr, "hash:"+block_hash), 0)
+            return int(self.node.cfx_getTransactionCount(addr, "hash:" + block_hash), 0)
         else:
             return int(self.node.cfx_getTransactionCount(addr, epoch), 0)
 
@@ -177,11 +178,11 @@ class RpcClient:
 
         return tx_hash
 
-    def send_usable_genesis_accounts(self, account_start_index:int):
+    def send_usable_genesis_accounts(self, account_start_index: int):
         self.node.test_sendUsableGenesisAccounts(account_start_index)
 
     def wait_for_receipt(
-        self, tx_hash: str, num_txs=1, timeout=10, state_before_wait=True
+            self, tx_hash: str, num_txs=1, timeout=10, state_before_wait=True
     ):
         if state_before_wait:
             self.generate_blocks_to_state(num_txs=num_txs)
@@ -205,16 +206,16 @@ class RpcClient:
         return self.node.cfx_getTransactionByHash(tx_hash)
 
     def new_tx(
-        self,
-        sender=None,
-        receiver=None,
-        nonce=None,
-        gas_price=1,
-        gas=21000,
-        value=100,
-        data=b"",
-        sign=True,
-        priv_key=None,
+            self,
+            sender=None,
+            receiver=None,
+            nonce=None,
+            gas_price=1,
+            gas=21000,
+            value=100,
+            data=b"",
+            sign=True,
+            priv_key=None,
     ):
         if sender is None:
             sender = self.GENESIS_ADDR
@@ -236,15 +237,15 @@ class RpcClient:
             return tx
 
     def new_contract_tx(
-        self,
-        receiver: str,
-        data_hex: str,
-        sender=None,
-        priv_key=None,
-        nonce=None,
-        gas_price=1,
-        gas=10000000,
-        value=0,
+            self,
+            receiver: str,
+            data_hex: str,
+            sender=None,
+            priv_key=None,
+            nonce=None,
+            gas_price=1,
+            gas=10000000,
+            value=0,
     ):
         if sender is None:
             sender = self.GENESIS_ADDR
@@ -324,7 +325,7 @@ class RpcClient:
         return int(gas, 0)
 
     def call(
-        self, contract_addr: str, data_hex: str, nonce=None, epoch: str = None
+            self, contract_addr: str, data_hex: str, nonce=None, epoch: str = None
     ) -> str:
         tx = self.new_tx_for_call(contract_addr, data_hex, nonce=nonce)
 

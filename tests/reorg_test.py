@@ -17,7 +17,7 @@ class ReorgTest(ConfluxTestFramework):
     def setup_network(self):
         self.setup_nodes()
         assert (
-            self.num_nodes % self.n_shard == 0
+                self.num_nodes % self.n_shard == 0
         ), "each shard should have the same size"
         for s in range(self.n_shard):
             for i in range(s * self.shard_size, (s + 1) * self.shard_size - 1):
@@ -34,7 +34,7 @@ class ReorgTest(ConfluxTestFramework):
 
         for s in range(self.n_shard):
             """ Send random transactions to this shard s """
-            shard_nodes = self.nodes[s * self.shard_size : (s + 1) * self.shard_size]
+            shard_nodes = self.nodes[s * self.shard_size: (s + 1) * self.shard_size]
             receiver_sk, _ = ec_random_keys()
             value = default_config["TOTAL_COIN"] - 21000
             balance_map = {receiver_sk: value}

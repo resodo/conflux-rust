@@ -27,17 +27,14 @@ class BlockLatencyType(enum.Enum):
     Cons = 2
 
 
-
-
-
 class Transaction:
     def __init__(
-        self,
-        hash: str,
-        timestamp: float,
-        by_block=False,
-        packed_timestamps=None,
-        ready_pool_timstamps=None,
+            self,
+            hash: str,
+            timestamp: float,
+            by_block=False,
+            packed_timestamps=None,
+            ready_pool_timstamps=None,
     ):
         self.hash = hash
         self.received_timestamps = [timestamp]
@@ -124,7 +121,7 @@ class Transaction:
 
 class Block:
     def __init__(
-        self, hash: str, parent_hash: str, timestamp: float, height: int, referees: list
+            self, hash: str, parent_hash: str, timestamp: float, height: int, referees: list
     ):
         self.hash = hash
         self.parent = parent_hash
@@ -154,7 +151,7 @@ class Block:
             ref_hash = ref_hash.strip()
             if len(ref_hash) > 0:
                 assert (
-                    len(ref_hash) == 66
+                        len(ref_hash) == 66
                 ), "invalid block referee hash length, line = {}".format(log_line)
                 referees.append(ref_hash)
         return Block(block_hash, parent_hash, timestamp, height, referees)
@@ -244,7 +241,7 @@ class NodeLogMapper:
 
         self.blocks = {}
         self.txs = {}
-        self.by_block_ratio=[]
+        self.by_block_ratio = []
         self.sync_cons_gaps = []
 
     @staticmethod
@@ -283,7 +280,7 @@ class NodeLogMapper:
                 )
             )
             assert (
-                sync_len >= cons_len
+                    sync_len >= cons_len
             ), "invalid statistics for sync/cons gap, log line = {}".format(line)
             self.sync_cons_gaps.append(sync_len - cons_len)
 
@@ -404,7 +401,6 @@ class LogAggregator:
 
     def add_host(self, host_log: HostLogReducer):
         self.sync_cons_gap_stats.extend(host_log.sync_cons_gap_stats)
-
 
         for b in host_log.blocks.values():
             Block.add_or_merge(self.blocks, b)

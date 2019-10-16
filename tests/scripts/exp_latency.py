@@ -4,6 +4,7 @@ import argparse
 import os
 import time
 
+
 def execute(cmd, retry, cmd_description):
     while True:
         ret = os.system(cmd)
@@ -38,6 +39,7 @@ def kill_remote_conflux(ips_file: str):
     pssh(
         ips_file, "killall conflux || echo already killed", 3, "kill remote conflux"
     )
+
 
 def cleanup_remote_logs(ips_file: str):
     pssh(ips_file, "rm -f *.tgz *.out; rm -rf /tmp/conflux_test_*")
@@ -146,7 +148,7 @@ class LatencyExperiment(ArgumentHolder):
         self.metrics_report_interval_ms = 3000
         self.send_tx_period_ms = 1300
         self.txgen_account_count = 1000
-        self.slave_count=10
+        self.slave_count = 10
 
         self.batch_config = "500:1:150000:1000,500:1:200000:1000,500:1:250000:1000,500:1:300000:1000,500:1:350000:1000"
 
@@ -155,7 +157,7 @@ class LatencyExperiment(ArgumentHolder):
             print("genesis secrets account error, file size should be multiple of 65")
             exit()
 
-        self.txgen_account_count= int((os.path.getsize("./genesis_secrets.txt")/65)//self.slave_count)
+        self.txgen_account_count = int((os.path.getsize("./genesis_secrets.txt") / 65) // self.slave_count)
 
     def run(self):
         for config in RemoteSimulateConfig.parse(self.batch_config):
@@ -192,9 +194,11 @@ class LatencyExperiment(ArgumentHolder):
             )
             if self.enable_flamegraph:
                 try:
-                    execute("./copy_file_from_slave.sh conflux.svg {} > /dev/null".format(tag), 10, "collect flamegraph")
+                    execute("./copy_file_from_slave.sh conflux.svg {} > /dev/null".format(tag), 10,
+                            "collect flamegraph")
                 except:
-                    print("Failed to copy flamegraph file conflux.svg, please try again via copy_file_from_slave.sh in manual")
+                    print(
+                        "Failed to copy flamegraph file conflux.svg, please try again via copy_file_from_slave.sh in manual")
 
             execute("cp exp.log {}.exp.log".format(tag), 3, "copy exp.log")
 
@@ -268,7 +272,7 @@ class LatencyExperiment(ArgumentHolder):
 
         ret = os.system(cmd)
         assert (
-            ret == 0
+                ret == 0
         ), "Failed to run remote simulator, return code = {}. Please check [{}] for more details".format(
             ret, self.simulate_log_file
         )
@@ -304,7 +308,7 @@ class LatencyExperiment(ArgumentHolder):
             )
         )
         assert (
-            ret == 0
+                ret == 0
         ), "Failed to statistic block relay latency, return code = {}".format(ret)
 
         if self.stat_confirmation_latency:
@@ -313,7 +317,7 @@ class LatencyExperiment(ArgumentHolder):
                 "python3 stat_confirmation.py logs 4 >> {}".format(self.stat_log_file)
             )
             assert (
-                ret == 0
+                    ret == 0
             ), "Failed to statistic block confirmation latency, return code = {}".format(
                 ret
             )

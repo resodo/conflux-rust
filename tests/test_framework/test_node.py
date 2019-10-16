@@ -26,17 +26,17 @@ class ErrorMatch(Enum):
 
 class TestNode:
     def __init__(
-        self,
-        index,
-        datadir,
-        rpchost,
-        confluxd,
-        rpc_timeout=None,
-        remote=False,
-        ip=None,
-        user=None,
-        rpcport=None,
-        no_pssh=False,
+            self,
+            index,
+            datadir,
+            rpchost,
+            confluxd,
+            rpc_timeout=None,
+            remote=False,
+            ip=None,
+            user=None,
+            rpcport=None,
+            no_pssh=False,
     ):
         self.index = index
         self.datadir = datadir
@@ -302,12 +302,12 @@ class TestNode:
         wait_until(self.is_node_stopped, timeout=timeout)
 
     def assert_start_raises_init_error(
-        self,
-        extra_args=None,
-        expected_msg=None,
-        match=ErrorMatch.FULL_TEXT,
-        *args,
-        **kwargs,
+            self,
+            extra_args=None,
+            expected_msg=None,
+            match=ErrorMatch.FULL_TEXT,
+            *args,
+            **kwargs,
     ):
         """Attempt to start the node and expect it to raise an error.
 
@@ -317,7 +317,7 @@ class TestNode:
         Will throw if bitcoind starts without an error.
         Will throw if an expected_msg is provided and it does not match bitcoind's stdout."""
         with tempfile.NamedTemporaryFile(
-            dir=self.stderr_dir, delete=False
+                dir=self.stderr_dir, delete=False
         ) as log_stderr, tempfile.NamedTemporaryFile(
             dir=self.stdout_dir, delete=False
         ) as log_stdout:
@@ -362,8 +362,8 @@ class TestNode:
                     assert_msg = "bitcoind should have exited with an error"
                 else:
                     assert_msg = (
-                        "bitcoind should have exited with expected error "
-                        + expected_msg
+                            "bitcoind should have exited with expected error "
+                            + expected_msg
                     )
                 self._raise_assertion_error(assert_msg)
 

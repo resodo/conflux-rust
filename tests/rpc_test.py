@@ -7,16 +7,7 @@ import types
 from conflux.messages import GetBlockHeaders, GET_BLOCK_HEADERS_RESPONSE
 from test_framework.mininode import start_p2p_connection
 from test_framework.test_framework import ConfluxTestFramework
-from test_framework.util import (
-    assert_equal,
-    connect_nodes,
-    get_peer_addr,
-    wait_until,
-    WaitHandler,
-)
-
-from test_framework.util import assert_equal, connect_nodes, get_peer_addr, wait_until, WaitHandler, checktx, \
-    initialize_datadir
+from test_framework.util import assert_equal, connect_nodes, get_peer_addr, wait_until, WaitHandler, initialize_datadir
 
 
 class RpcTest(ConfluxTestFramework):

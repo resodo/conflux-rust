@@ -69,13 +69,13 @@ class AuthServiceProxy:
 
     # ensure_ascii: escape unicode as \uXXXX, passed to json.dumps
     def __init__(
-        self,
-        service_url,
-        service_name=None,
-        lock=None,
-        timeout=HTTP_TIMEOUT,
-        connection=None,
-        ensure_ascii=True,
+            self,
+            service_url,
+            service_name=None,
+            lock=None,
+            timeout=HTTP_TIMEOUT,
+            connection=None,
+            ensure_ascii=True,
     ):
         if lock is None:
             self.lock = Lock()
@@ -193,8 +193,8 @@ class AuthServiceProxy:
                 {
                     "code": -344,
                     "message": "%r RPC took longer than %f seconds. Consider "
-                    "using larger timeout for calls that take "
-                    "longer to return." % (self._service_name, self.__conn.timeout),
+                               "using larger timeout for calls that take "
+                               "longer to return." % (self._service_name, self.__conn.timeout),
                 }
             )
         if http_response is None:
@@ -208,7 +208,7 @@ class AuthServiceProxy:
                 {
                     "code": -342,
                     "message": "non-JSON HTTP response with '%i %s' from server"
-                    % (http_response.status, http_response.reason),
+                               % (http_response.status, http_response.reason),
                 }
             )
 

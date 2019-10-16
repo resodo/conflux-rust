@@ -1,17 +1,10 @@
-import random
-import threading
-import json
-import enum
-import copy
 import argparse
-import eth_utils
-import rlp
+import copy
+import enum
 
 from conflux.rpc import RpcClient
-from test_framework.test_framework import ConfluxTestFramework
-from test_framework.blocktools import create_block_with_nonce
-from test_framework.test_framework import ConfluxTestFramework
 from test_framework.mininode import *
+from test_framework.test_framework import ConfluxTestFramework
 from test_framework.util import *
 
 DEFAULT_HASH = '0x0000000000000000000000000000000000000000000000000000000000000000'
@@ -135,10 +128,10 @@ class ConsensusBlockStatus(object):
                 self.era_block_hash != other.era_block_hash:
             return False
         return self.hash == other.hash and \
-            self.past_era_weight == other.past_era_weight and \
-            self.block_status == other.block_status and \
-            self.adaptive == other.adaptive and \
-            self.stable == other.stable
+               self.past_era_weight == other.past_era_weight and \
+               self.block_status == other.block_status and \
+               self.adaptive == other.adaptive and \
+               self.stable == other.stable
 
     def __str__(self):
         return "ConsensusBlockStatus(\
@@ -168,10 +161,10 @@ class ConsensusExecutionStatus(object):
 
     def __eq__(self, other):
         return self.hash == other.hash and \
-            self.deferred_state_root == other.deferred_state_root and \
-            self.deferred_receipt_root == other.deferred_receipt_root and \
-            self.deferred_logs_bloom_hash == other.deferred_logs_bloom_hash and \
-            self.state_valid == other.state_valid
+               self.deferred_state_root == other.deferred_state_root and \
+               self.deferred_receipt_root == other.deferred_receipt_root and \
+               self.deferred_logs_bloom_hash == other.deferred_logs_bloom_hash and \
+               self.state_valid == other.state_valid
 
 
 class ConsensusSnapshot(object):
@@ -189,7 +182,7 @@ class ConsensusSnapshot(object):
                 assert block.stable == verified_block.stable
                 assert block.adaptive == verified_block.adaptive
                 assert block.era_block_hash == verified_block.era_block_hash or \
-                    block.era_block_hash == DEFAULT_HASH
+                       block.era_block_hash == DEFAULT_HASH
                 assert block.past_era_weight == verified_block.past_era_weight
         elif block.hash in self.block_status_unverified:
             unverified_block = self.block_status_unverified[block.hash]
@@ -201,8 +194,8 @@ class ConsensusSnapshot(object):
                     assert block.stable == unverified_block.stable
                     assert block.adaptive == unverified_block.adaptive
                     assert block.era_block_hash == unverified_block.era_block_hash or \
-                        block.era_block_hash == DEFAULT_HASH or \
-                        unverified_block.era_block_hash == DEFAULT_HASH
+                           block.era_block_hash == DEFAULT_HASH or \
+                           unverified_block.era_block_hash == DEFAULT_HASH
                     assert block.past_era_weight == unverified_block.past_era_weight
         else:
             self.block_status_unverified[block.hash] = block

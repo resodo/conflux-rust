@@ -111,7 +111,7 @@ class CrashTest(ConfluxTestFramework):
         self.log.info("Wait for node 0 to recover from crash")
         wait_until(
             lambda: parse_as_int(self.nodes[0].cfx_getBalance(sender_addr))
-            == sender_balance
+                    == sender_balance
         )
         wait_until(
             lambda: parse_as_int(self.nodes[0].cfx_getBalance(receiver_addr)) == value

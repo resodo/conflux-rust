@@ -113,15 +113,16 @@ class ConfluxTestFramework:
             dest="remote_ips",
             help="The file of ip list for remote conflux nodes",
         )
-        parser.add_argument("--localip", default="", dest="local_ip", help="The ip of local node (when running multi-nodes tests)")
+        parser.add_argument("--localip", default="", dest="local_ip",
+                            help="The ip of local node (when running multi-nodes tests)")
         parser.add_argument(
             "-l",
             "--loglevel",
             dest="loglevel",
             default="INFO",
             help="log events at this level and higher to the console. Can be set to DEBUG, INFO, WARNING, ERROR "
-            "or CRITICAL. Passing --loglevel DEBUG will output all logs to console. Note that logs at all levels "
-            "are always written to the test_framework.log file in the temporary test directory.",
+                 "or CRITICAL. Passing --loglevel DEBUG will output all logs to console. Note that logs at all levels "
+                 "are always written to the test_framework.log file in the temporary test directory.",
         )
         parser.add_argument(
             "--tracerpc",
@@ -238,9 +239,9 @@ class ConfluxTestFramework:
             )
 
         if (
-            not self.options.nocleanup
-            and not self.options.noshutdown
-            and success != TestStatus.FAILED
+                not self.options.nocleanup
+                and not self.options.noshutdown
+                and success != TestStatus.FAILED
         ):
             self.log.info("Cleaning up {} on exit".format(self.options.tmpdir))
             cleanup_tree_on_exit = True
@@ -328,7 +329,7 @@ class ConfluxTestFramework:
             )
 
     def add_remote_nodes(
-        self, num_nodes, ip, user, rpchost=None, binary=None, no_pssh=False
+            self, num_nodes, ip, user, rpchost=None, binary=None, no_pssh=False
     ):
         """Instantiate TestNode objects"""
         if binary is None:
@@ -350,13 +351,13 @@ class ConfluxTestFramework:
             )
 
     def start_node(
-        self,
-        i,
-        extra_args=None,
-        phase_to_wait=("NormalSyncPhase", "CatchUpSyncBlockPhase"),
-        wait_time=30,
-        *args,
-        **kwargs,
+            self,
+            i,
+            extra_args=None,
+            phase_to_wait=("NormalSyncPhase", "CatchUpSyncBlockPhase"),
+            wait_time=30,
+            *args,
+            **kwargs,
     ):
         """Start a conflux node"""
 
