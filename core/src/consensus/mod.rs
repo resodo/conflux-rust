@@ -26,7 +26,8 @@ use crate::{
     statistics::SharedStatistics,
     storage::{state_manager::StateManagerTrait, SnapshotAndEpochIdRef},
     transaction_pool::SharedTransactionPool,
-    verification::VerificationConfig, vm_factory::VmFactory,
+    verification::VerificationConfig,
+    vm_factory::VmFactory,
 };
 use cfx_types::{Bloom, H160, H256, U256};
 use metrics::{register_meter_with_group, Meter, MeterTimer};
@@ -140,7 +141,7 @@ impl ConsensusGraph {
         conf: ConsensusConfig, vm: VmFactory, txpool: SharedTransactionPool,
         statistics: SharedStatistics, data_man: Arc<BlockDataManager>,
         pow_config: ProofOfWorkConfig, era_genesis_block_hash: &H256,
-        state_exposer: SharedStateExposer, eth_compatibility_mode: bool,
+        eth_compatibility_mode: bool,
     ) -> Self
     {
         let inner =
@@ -188,8 +189,7 @@ impl ConsensusGraph {
     pub fn new(
         conf: ConsensusConfig, vm: VmFactory, txpool: SharedTransactionPool,
         statistics: SharedStatistics, data_man: Arc<BlockDataManager>,
-        pow_config: ProofOfWorkConfig, state_exposer: SharedStateExposer,
-        verification_config: VerificationConfig,
+        pow_config: ProofOfWorkConfig, verification_config: VerificationConfig,
     ) -> Self
     {
         let genesis_hash = data_man.get_cur_consensus_era_genesis_hash();
@@ -201,7 +201,6 @@ impl ConsensusGraph {
             data_man,
             pow_config,
             &genesis_hash,
-            state_exposer,
             verification_config.eth_compatibility_mode,
         )
     }

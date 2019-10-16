@@ -126,9 +126,9 @@ impl SendTxRequest {
 
         let password = password.map(|s| Password::from(s));
         let sig = account_provider(None, None)?
-            .sign(self.from.into(), password, tx.hash())
+            .sign(self.from.into(), password, tx.hash(None /* chain_id */))
             .map_err(|e| format!("failed to sign transaction: {:?}", e))?;
 
-        Ok(tx.with_signature(sig))
+        Ok(tx.with_signature(sig, None /* chain_id */))
     }
 }

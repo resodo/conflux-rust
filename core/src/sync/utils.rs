@@ -171,7 +171,6 @@ pub fn initialize_synchronization_graph(
         statistics.clone(),
         data_man.clone(),
         pow_config.clone(),
-        state_exposer.clone(),
         verification_config,
     ));
 

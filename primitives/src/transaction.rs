@@ -388,14 +388,14 @@ impl TransactionWithSignature {
 
     /// Construct a signature object from the sig.
     pub fn signature(&self) -> Signature {
+        let r = BigEndianHash::from_uint(&self.r);
+        let s = BigEndianHash::from_uint(&self.s);
         if self.v < 2 {
             // conflux transaction
-            Signature::from_rsv(&self.r.into(), &self.s.into(), self.v)
+            Signature::from_rsv(&r, &s, self.v)
         } else {
             // ethereum transaction
-            Signature::from_electrum(
-                &Signature::from_rsv(&self.r.into(), &self.s.into(), self.v)[..],
-            )
+            Signature::from_electrum(&Signature::from_rsv(&r, &s, self.v)[..])
         }
     }
 

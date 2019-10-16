@@ -169,7 +169,6 @@ impl LightClient {
             statistics.clone(),
             data_man.clone(),
             pow_config.clone(),
-            state_exposer.clone(),
             verification_config,
         ));
 

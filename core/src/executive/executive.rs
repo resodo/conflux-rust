@@ -967,7 +967,7 @@ impl<'a, 'b> Executive<'a, 'b> {
     }
 
     pub fn transact_virtual(
-        &mut self, tx: &SignedTransaction,
+        &mut self, tx: &SignedTransaction, eth_compatibility_mode: bool,
     ) -> ExecutionResult<Executed> {
         let sender = tx.sender();
         let balance = self.state.balance(&sender)?;
@@ -982,7 +982,7 @@ impl<'a, 'b> Executive<'a, 'b> {
             )?;
         }
         let mut nonce_increased = false;
-        self.transact(tx, &mut nonce_increased)
+        self.transact(tx, &mut nonce_increased, eth_compatibility_mode)
     }
 
     pub fn transact(
