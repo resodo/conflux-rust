@@ -10,7 +10,7 @@ use crate::{
     statistics::Statistics,
     storage::{state_manager::StorageConfiguration, StorageManager},
     sync::{SyncGraphConfig, SynchronizationGraph},
-    transaction_pool::DEFAULT_MAX_BLOCK_GAS_LIMIT,
+    transaction_pool::{TxPoolConfig, DEFAULT_MAX_BLOCK_GAS_LIMIT},
     verification::VerificationConfig,
     vm_factory::VmFactory,
     ConsensusGraph, TransactionPool,
@@ -129,8 +129,8 @@ pub fn initialize_synchronization_graph(
         true,  /* test_mode */
         false, /* eth_compatibility_mode */
     );
-    let txpool = Arc::new(TransactionPool::with_capacity(
-        500_000,
+    let txpool = Arc::new(TransactionPool::new(
+        TxPoolConfig::default(),
         data_man.clone(),
         verification_config,
     ));

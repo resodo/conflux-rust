@@ -59,11 +59,29 @@ lazy_static! {
         Lock::register("txpool_insert_txs_enqueue_lock");
 }
 
-pub const DEFAULT_MIN_TRANSACTION_GAS_PRICE: u64 = 1;
 pub const DEFAULT_MAX_TRANSACTION_GAS_LIMIT: u64 = 100_000_000;
 pub const DEFAULT_MAX_BLOCK_GAS_LIMIT: u64 = 30_000 * 100_000;
 
+pub struct TxPoolConfig {
+    pub capacity: usize,
+    pub min_tx_price: u64,
+    pub max_tx_gas: u64,
+    pub max_block_gas: u64,
+}
+
+impl Default for TxPoolConfig {
+    fn default() -> Self {
+        TxPoolConfig {
+            capacity: 500_000,
+            min_tx_price: 1,
+            max_tx_gas: DEFAULT_MAX_TRANSACTION_GAS_LIMIT,
+            max_block_gas: DEFAULT_MAX_BLOCK_GAS_LIMIT,
+        }
+    }
+}
+
 pub struct TransactionPool {
+    config: TxPoolConfig,
     inner: RwLock<TransactionPoolInner>,
     to_propagate_trans: Arc<RwLock<HashMap<H256, Arc<SignedTransaction>>>>,
     pub data_man: Arc<BlockDataManager>,
@@ -78,17 +96,15 @@ pub struct TransactionPool {
 pub type SharedTransactionPool = Arc<TransactionPool>;
 
 impl TransactionPool {
-    pub fn with_capacity(
-        capacity: usize, data_man: Arc<BlockDataManager>,
-        verification_config: VerificationConfig,
+    pub fn new(config: TxPoolConfig, data_man: Arc<BlockDataManager>,
+        verification_config: VerificationConfig)
     ) -> Self
     {
         let genesis_hash = data_man.genesis_block.hash();
+        let inner = TransactionPoolInner::with_capacity(config.capacity, verification_config);
         TransactionPool {
-            inner: RwLock::new(TransactionPoolInner::with_capacity(
-                capacity,
-                verification_config,
-            )),
+            config,
+            inner: RwLock::new(inner),
             to_propagate_trans: Arc::new(RwLock::new(HashMap::new())),
             data_man,
             spec: vm::Spec::new_spec(),
@@ -270,15 +286,13 @@ impl TransactionPool {
                 ));
             }
 
-            // check transaction gas price
-            if transaction.gas_price < DEFAULT_MIN_TRANSACTION_GAS_PRICE.into()
-            {
-                debug!("Transaction {} discarded due to below minimal gas price: price {}", transaction.hash(), transaction.gas_price);
-                return Err(format!(
-                    "transaction gas price {} less than the minimum value {}",
-                    transaction.gas_price, DEFAULT_MIN_TRANSACTION_GAS_PRICE
-                ));
-            }
+        // check transaction gas price
+        if transaction.gas_price < self.config.min_tx_price.into() {
+            trace!("Transaction {} discarded due to below minimal gas price: price {}", transaction.hash(), transaction.gas_price);
+            return Err(format!(
+                "transaction gas price {} less than the minimum value {}",
+                transaction.gas_price, self.config.min_tx_price
+            ));
         }
 
         if let Err(e) = transaction

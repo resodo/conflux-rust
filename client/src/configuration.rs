@@ -9,6 +9,7 @@ use cfxcore::{
     consensus_parameters::*,
     storage::{self, state_manager::StorageConfiguration},
     sync::{ProtocolConfiguration, SyncGraphConfig},
+    transaction_pool::TxPoolConfig,
 };
 use metrics::MetricsConfiguration;
 use std::convert::TryInto;
@@ -84,6 +85,7 @@ build_config! {
         (start_mining, (bool), false)
         (initial_difficulty, (Option<u64>), None)
         (tx_pool_size, (usize), 500_000)
+        (tx_pool_min_tx_gas_price, (u64), 1)
         (mining_author, (Option<String>), None)
         (use_stratum, (bool), false)
         (stratum_port, (u16), 32525)
@@ -413,6 +415,15 @@ impl Configuration {
                 .clone(),
             influxdb_report_node: self.raw_conf.metrics_influxdb_node.clone(),
         }
+    }
+
+    pub fn txpool_config(&self) -> TxPoolConfig {
+        let mut config = TxPoolConfig::default();
+
+        config.capacity = self.raw_conf.tx_pool_size;
+        config.min_tx_price = self.raw_conf.tx_pool_min_tx_gas_price;
+
+        config
     }
 }
 
