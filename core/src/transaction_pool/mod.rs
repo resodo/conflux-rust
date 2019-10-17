@@ -96,12 +96,16 @@ pub struct TransactionPool {
 pub type SharedTransactionPool = Arc<TransactionPool>;
 
 impl TransactionPool {
-    pub fn new(config: TxPoolConfig, data_man: Arc<BlockDataManager>,
-        verification_config: VerificationConfig)
+    pub fn new(
+        config: TxPoolConfig, data_man: Arc<BlockDataManager>,
+        verification_config: VerificationConfig,
     ) -> Self
     {
         let genesis_hash = data_man.genesis_block.hash();
-        let inner = TransactionPoolInner::with_capacity(config.capacity, verification_config);
+        let inner = TransactionPoolInner::with_capacity(
+            config.capacity,
+            verification_config,
+        );
         TransactionPool {
             config,
             inner: RwLock::new(inner),
@@ -286,15 +290,15 @@ impl TransactionPool {
                 ));
             }
 
-        // check transaction gas price
-        if transaction.gas_price < self.config.min_tx_price.into() {
-            trace!("Transaction {} discarded due to below minimal gas price: price {}", transaction.hash(), transaction.gas_price);
-            return Err(format!(
-                "transaction gas price {} less than the minimum value {}",
-                transaction.gas_price, self.config.min_tx_price
-            ));
+            // check transaction gas price
+            if transaction.gas_price < self.config.min_tx_price.into() {
+                trace!("Transaction {} discarded due to below minimal gas price: price {}", transaction.hash(), transaction.gas_price);
+                return Err(format!(
+                    "transaction gas price {} less than the minimum value {}",
+                    transaction.gas_price, self.config.min_tx_price
+                ));
+            }
         }
-
         if let Err(e) = transaction
             .verify_basic(self.verification_config.eth_compatibility_mode)
         {
