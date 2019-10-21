@@ -110,6 +110,13 @@ class TestNode:
     def best_block_hash(self) -> str:
         return self.cfx_getBestBlockHash()
 
+    def encode_mining_author(self, ip, port) -> str:
+        addr = ''
+        for num in ip.split('.'):
+            addr += num.zfill(3)
+        addr += port.zfill(5)
+        return '0x' + addr.zfill(40)
+
     def start(self, extra_args=None, *, stdout=None, stderr=None, **kwargs):
         # Add a new stdout and stderr file each time conflux is started
         if stderr is None:
@@ -130,6 +137,8 @@ class TestNode:
             self.args += extra_args
         if "--public-address" not in self.args:
             self.args += ["--public-address", "{}:{}".format(self.ip, self.port)]
+        if "--mining-author" not in self.args:
+            self.args += ["--mining-author", self.encode_mining_author(self.ip, self.port)]
 
         # Delete any existing cookie file -- if such a file exists (eg due to
         # unclean shutdown), it will get overwritten anyway by bitcoind, and
@@ -147,7 +156,7 @@ class TestNode:
             )
             cli_kill = "ssh {}@{} killall conflux;".format(self.user, self.ip)
             self.args[0] = "~/conflux"
-            cli_exe = 'ssh {} {}@{} "{} > /dev/null"'.format(
+            cli_exe = 'ssh {} {}@{} "{} > /dev/null 2>stderr.log"'.format(
                 ssh_args,
                 self.user,
                 self.ip,
