@@ -115,7 +115,7 @@ class TestNode:
         for num in ip.split('.'):
             addr += num.zfill(3)
         addr += port.zfill(5)
-        return '0x' + addr.zfill(40)
+        return addr.zfill(40)
 
     def start(self, extra_args=None, *, stdout=None, stderr=None, **kwargs):
         # Add a new stdout and stderr file each time conflux is started
@@ -154,7 +154,7 @@ class TestNode:
             cli_conf = "scp {3} -r {0} {1}@{2}:`dirname {0}`;".format(
                 self.datadir, self.user, self.ip, ssh_args
             )
-            cli_kill = "ssh {}@{} killall conflux;".format(self.user, self.ip)
+            cli_kill = "ssh {}@{} pkill -f conflux;".format(self.user, self.ip)
             self.args[0] = "~/conflux"
             cli_exe = 'ssh {} {}@{} "{} > /dev/null 2>stderr.log"'.format(
                 ssh_args,
