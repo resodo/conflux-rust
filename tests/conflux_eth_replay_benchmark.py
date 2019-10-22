@@ -157,7 +157,8 @@ class ConfluxEthReplayTest(ConfluxTestFramework):
 
     def run_test(self):
         # Start mininode connection
-        start_p2p_connection(self.nodes, self.remote, self.local_ip)
+        connection_limit = 10
+        start_p2p_connection(self.nodes, self.remote, self.local_ip, connection_limit)
 
         tx_file_path = (
             self.TX_FILE
@@ -206,7 +207,7 @@ class ConfluxEthReplayTest(ConfluxTestFramework):
                 time.sleep(speed_diff)
 
             # peers_to_send = range(0, self.num_nodes)
-            peer_to_send = random.choice(range(0, self.num_nodes))
+            peer_to_send = 0  # random.choice(range(0, self.num_nodes))
             peer_to_ask = 0
             txs_rlp = rlp.codec.length_prefix(len(txs), 192) + txs
             self.nodes[peer_to_send].p2p.send_protocol_packet(
@@ -298,7 +299,7 @@ class BlockGenThread(threading.Thread):
     BLOCK_TX_LIMIT = 10000
     BLOCK_SIZE_LIMIT = 800000
     # Seems to be 90bytes + artificial 128b
-    SIMPLE_TX_PER_BLOCK = 700
+    SIMPLE_TX_PER_BLOCK = 0  # 700
     # SIMPLE_TX_PER_BLOCK = 0
     # Seems to be 90 + 64 bytes.
     # ERC20_TX_PER_BLOCK = 50
@@ -388,7 +389,7 @@ class BlockGenThread(threading.Thread):
                     simple_tx_count,
                     erc20_tx_count,
                 )
-                self.log.info(
+                self.log.debug(
                     "node %s generated one block with %s extra dummy tx and %s extra erc20 tx",
                     self.node_id,
                     simple_tx_count,

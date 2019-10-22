@@ -78,7 +78,7 @@ class P2PConnection(asyncore.dispatcher):
         # assert False
         self.recvbuf = b""
         self.sendbuf = b""
-        # assert False
+        assert False
         try:
             self.close()
         except:
@@ -584,10 +584,10 @@ def network_thread_join(timeout=10):
         assert not thread.is_alive()
 
 
-def start_p2p_connection(nodes, remote=False, local_ip=None):
+def start_p2p_connection(nodes, remote=False, local_ip=None, connection_limit=None):
     p2p_connections = []
 
-    for node in nodes:
+    for node in nodes[:connection_limit]:
         conn = DefaultNode(remote, local_ip)
         p2p_connections.append(conn)
         node.add_p2p_connection(conn)

@@ -144,8 +144,9 @@ class ContractBenchTest(SmartContractBenchBase):
         # interact with newContract(), sender send conflux to himself
         time_lock = int(time.time()) + 7200
         data = \
-        contract.functions.newContract(self.sender_checksum, self.problem, time_lock).buildTransaction(self.tx_conf)[
-            "data"];
+            contract.functions.newContract(self.sender_checksum, self.problem, time_lock).buildTransaction(
+                self.tx_conf)[
+                "data"];
         cost = 5000000000000000000
         result = self.call_contract(self.sender, self.priv_key, contractAddr, data, cost)
         logs = self.rpc.get_logs(self.filter)
@@ -363,8 +364,8 @@ class ContractBenchTest(SmartContractBenchBase):
         # get digest and sign it
         ts = int(time.time()) + 7200
         data = \
-        contract.functions.getHash(Web3.toChecksumAddress(self.pub[0]), Web3.toChecksumAddress(self.pub[1]), 0, ts,
-                                   True).buildTransaction(self.tx_conf)["data"]
+            contract.functions.getHash(Web3.toChecksumAddress(self.pub[0]), Web3.toChecksumAddress(self.pub[1]), 0, ts,
+                                       True).buildTransaction(self.tx_conf)["data"]
         result = self.rpc.call(contractAddr, data)
         v, r, s = ecsign(bytes.fromhex(result[2:]), self.pri[0])
         r = self.fixto64(hex(r))
@@ -374,8 +375,9 @@ class ContractBenchTest(SmartContractBenchBase):
 
         # premit
         data = \
-        contract.functions.permit(Web3.toChecksumAddress(self.pub[0]), Web3.toChecksumAddress(self.pub[1]), 0, ts, True,
-                                  v, r, s).buildTransaction(self.tx_conf)["data"]
+            contract.functions.permit(Web3.toChecksumAddress(self.pub[0]), Web3.toChecksumAddress(self.pub[1]), 0, ts,
+                                      True,
+                                      v, r, s).buildTransaction(self.tx_conf)["data"]
         result = self.call_contract(self.pub[5], self.pri[5], contractAddr, data)
         assert (result["outcomeStatus"] == 0)
 
@@ -447,8 +449,8 @@ class ContractBenchTest(SmartContractBenchBase):
         result = self.call_contract(self.pub[0], self.pri[0], dai_addr, data, 0)
         assert (result["outcomeStatus"] == 0)
         data = \
-        dai.functions.allowance(Web3.toChecksumAddress(self.pub[0]), dai_join_addr).buildTransaction(self.tx_conf)[
-            "data"]
+            dai.functions.allowance(Web3.toChecksumAddress(self.pub[0]), dai_join_addr).buildTransaction(self.tx_conf)[
+                "data"]
         result = self.rpc.call(dai_addr, data)
         assert_equal(int(result, 0), 100000)
         data = dai.functions.rely(dai_join_addr).buildTransaction(self.tx_conf)["data"]
