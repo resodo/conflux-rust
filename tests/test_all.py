@@ -27,7 +27,12 @@ TEST_SCRIPTS = []
 
 test_dir = os.path.dirname(os.path.realpath(__file__))
 
-test_subdirs = ["", "light", "network_tests"]  # include test_dir itself
+test_subdirs = [
+    "",  # include test_dir itself
+    "light",
+    "network_tests",
+    "full_node_tests",
+]
 
 # By default, run all *_test.py files in the specified subfolders.
 for subdir in test_subdirs:

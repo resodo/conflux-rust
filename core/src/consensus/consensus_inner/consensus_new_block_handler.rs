@@ -20,6 +20,7 @@ use crate::{
         state::StateTrait, state_manager::StateManagerTrait,
         SnapshotAndEpochIdRef,
     },
+    sync::delta::CHECKPOINT_DUMP_MANAGER,
     SharedTransactionPool,
 };
 use cfx_types::H256;
@@ -287,9 +288,15 @@ impl ConsensusNewBlockHandler {
         inner
             .data_man
             .set_cur_consensus_era_genesis_hash(&cur_era_hash, &next_era_hash);
+
+        let epoch_id = SnapshotAndEpochIdRef::new(&next_era_hash, None);
+        let has_state = inner.data_man.storage_manager.contains_state(epoch_id);
+        if let Ok(true) = has_state {
+            CHECKPOINT_DUMP_MANAGER.read().dump_async(next_era_hash);
+        }
     }
 
-    fn compute_anticone_bruteforce(
+    pub fn compute_anticone_bruteforce(
         inner: &ConsensusGraphInner, me: usize,
     ) -> BitSet {
         let parent = inner.arena[me].parent;
@@ -1429,7 +1436,7 @@ impl ConsensusNewBlockHandler {
                     Vec::with_capacity(epoch_arena_indices.len());
 
                 let mut already_executed = true;
-                if self.data_man.epoch_executed(&pivot_hash) {
+                if self.data_man.state_exists(&pivot_hash) {
                     for i in epoch_arena_indices {
                         if let Some(r) = self
                             .data_man

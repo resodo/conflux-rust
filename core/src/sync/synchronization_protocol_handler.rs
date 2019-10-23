@@ -19,7 +19,7 @@ use crate::{
             GetBlockHeadersResponse, NewBlockHashes, Status,
             TransactionDigests,
         },
-        state::SnapshotChunkSync,
+        state::{delta::CHECKPOINT_DUMP_MANAGER, SnapshotChunkSync},
         synchronization_phases::{SyncPhaseType, SynchronizationPhaseManager},
     },
 };
@@ -409,6 +409,7 @@ impl SynchronizationProtocolHandler {
                 op = Some(UpdateNodeOperation::Demotion)
             }
             ErrorKind::Decoder(_) => op = Some(UpdateNodeOperation::Remove),
+            ErrorKind::Io(_) => disconnect = false,
             ErrorKind::Network(kind) => match kind {
                 network::ErrorKind::AddressParse => disconnect = false,
                 network::ErrorKind::AddressResolve(_) => disconnect = false,
@@ -1272,6 +1273,26 @@ impl SynchronizationProtocolHandler {
         self.graph.remove_expire_blocks(timeout);
         self.relay_blocks(io, need_to_relay)
     }
+
+    fn notify_checkpoint_capability(&self, io: &dyn NetworkContext) {
+        let checkpoint = match CHECKPOINT_DUMP_MANAGER.read().dumped() {
+            Some(cp) => cp,
+            None => return,
+        };
+
+        let cap = DynamicCapability::ServeCheckpoint(Some(checkpoint));
+        let mut peers = Vec::new();
+
+        for (peer_id, state) in self.syn.peers.read().iter() {
+            let mut state = state.write();
+            if !state.notified_capabilities.contains(cap) {
+                peers.push(*peer_id);
+                state.notified_capabilities.insert(cap);
+            }
+        }
+
+        cap.broadcast_with_peers(io, peers);
+    }
 }
 
 impl NetworkProtocolHandler for SynchronizationProtocolHandler {
@@ -1395,6 +1416,7 @@ impl NetworkProtocolHandler for SynchronizationProtocolHandler {
             }
             CHECK_CATCH_UP_MODE_TIMER => {
                 self.update_sync_phase(io);
+                self.notify_checkpoint_capability(io);
             }
             LOG_STATISTIC_TIMER => {
                 self.log_statistics();

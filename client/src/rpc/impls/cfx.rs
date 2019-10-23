@@ -33,7 +33,13 @@ use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
 use super::common::RpcImpl as CommonImpl;
 
+#[derive(Default)]
+pub struct RpcImplConfiguration {
+    pub get_logs_filter_max_limit: Option<usize>,
+}
+
 pub struct RpcImpl {
+    config: RpcImplConfiguration,
     pub consensus: SharedConsensusGraph,
     sync: SharedSynchronizationService,
     block_gen: Arc<BlockGenerator>,
@@ -42,13 +48,14 @@ pub struct RpcImpl {
 }
 use crate::rpc::types::SendTxRequest;
 use cfxcore::block_data_manager::BlockExecutionResultWithEpoch;
+use primitives::filter::Filter;
 use txgen::TransactionGenerator;
 
 impl RpcImpl {
     pub fn new(
         consensus: SharedConsensusGraph, sync: SharedSynchronizationService,
         block_gen: Arc<BlockGenerator>, tx_pool: SharedTransactionPool,
-        tx_gen: Arc<TransactionGenerator>,
+        tx_gen: Arc<TransactionGenerator>, config: RpcImplConfiguration,
     ) -> Self
     {
         RpcImpl {
@@ -57,6 +64,7 @@ impl RpcImpl {
             block_gen,
             tx_pool,
             tx_gen,
+            config,
         }
     }
 
@@ -254,20 +262,29 @@ impl RpcImpl {
         };
 
         // Operations below will not involve the status of ConsensusInner
+        let block = self
+            .consensus
+            .data_man
+            .block_by_hash(&address.block_hash, true)
+            .ok_or(RpcError::internal_error())?;
+        let transaction = block
+            .transactions
+            .get(address.index)
+            .ok_or(RpcError::internal_error())?
+            .as_ref()
+            .clone();
         let receipt = execution_result
             .receipts
             .get(address.index)
             .ok_or(RpcError::internal_error())?
             .clone();
-        let block = self
+        let mut rpc_receipt = RpcReceipt::new(transaction, receipt, address);
+        let epoch_block_header = self
             .consensus
             .data_man
-            .block_by_hash(&epoch_hash, true)
+            .block_header_by_hash(&epoch_hash)
             .ok_or(RpcError::internal_error())?;
-        let transaction = block.transactions[address.index].clone();
-        let mut rpc_receipt =
-            RpcReceipt::new(transaction.as_ref().clone(), receipt, address);
-        let epoch_number = block.block_header.height();
+        let epoch_number = epoch_block_header.height();
         rpc_receipt.set_epoch_number(Some(epoch_number));
         rpc_receipt.set_state_root(state_root.into());
         Ok(Some(rpc_receipt))
@@ -455,8 +472,17 @@ impl RpcImpl {
 
     fn get_logs(&self, filter: RpcFilter) -> RpcResult<Vec<RpcLog>> {
         info!("RPC Request: cfx_getLogs({:?})", filter);
+        let mut filter: Filter = filter.into();
+        // If max_limit is set, the value in `filter` will be modified to
+        // satisfy this limitation to avoid loading too many blocks
+        // TODO Should the response indicates that the filter is modified?
+        if let Some(max_limit) = self.config.get_logs_filter_max_limit {
+            if filter.limit.is_none() || filter.limit.unwrap() > max_limit {
+                filter.limit = Some(max_limit);
+            }
+        }
         self.consensus
-            .logs(filter.into())
+            .logs(filter)
             .map_err(|e| format!("{}", e))
             .map_err(RpcError::invalid_params)
             .map(|logs| logs.iter().cloned().map(RpcLog::from).collect())

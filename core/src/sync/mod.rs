@@ -18,7 +18,7 @@ pub mod utils;
 
 pub use self::{
     error::{Error, ErrorKind},
-    state::RangedManifest,
+    state::{delta, restore},
     synchronization_graph::{
         SharedSynchronizationGraph, SyncGraphConfig, SyncGraphStatistics,
         SynchronizationGraph, SynchronizationGraphInner,
@@ -42,7 +42,7 @@ pub use self::{
 
 pub mod random {
     use rand;
-    pub fn new() -> rand::ThreadRng { rand::thread_rng() }
+    pub fn new() -> rand::prelude::ThreadRng { rand::thread_rng() }
 }
 
 pub mod msg_sender {
