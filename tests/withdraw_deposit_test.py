@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 from http.client import CannotSendRequest
+
+from easysolc import Solc
 from eth_utils import decode_hex
+from web3 import Web3
 
 from conflux.rpc import RpcClient
-from conflux.utils import encode_hex, privtoaddr, parse_as_int
+from conflux.utils import privtoaddr, int_to_hex
 from test_framework.block_gen_thread import BlockGenThread
-from test_framework.blocktools import create_transaction, encode_hex_0x
-from test_framework.test_framework import ConfluxTestFramework
+from test_framework.blocktools import encode_hex_0x
 from test_framework.mininode import *
+from test_framework.test_framework import ConfluxTestFramework
 from test_framework.util import *
-from web3 import Web3
-from easysolc import Solc
+
 
 class WithdrawDepositTest(ConfluxTestFramework):
     def set_test_params(self):
@@ -28,8 +30,8 @@ class WithdrawDepositTest(ConfluxTestFramework):
         solc = Solc()
         file_dir = os.path.dirname(os.path.realpath(__file__))
         staking_contract = solc.get_contract_instance(
-            abi_file = os.path.join(file_dir, "contracts/storage_interest_staking_abi.json"),
-            bytecode_file = os.path.join(file_dir, "contracts/storage_interest_staking_bytecode.dat"),
+            abi_file=os.path.join(file_dir, "contracts/storage_interest_staking_abi.json"),
+            bytecode_file=os.path.join(file_dir, "contracts/storage_interest_staking_bytecode.dat"),
         )
 
         start_p2p_connection(self.nodes)
@@ -42,7 +44,8 @@ class WithdrawDepositTest(ConfluxTestFramework):
         gas = 50000000
         block_gen_thread = BlockGenThread(self.nodes, self.log)
         block_gen_thread.start()
-        self.tx_conf = {"from":Web3.toChecksumAddress(encode_hex_0x(genesis_addr)), "nonce":int_to_hex(nonce), "gas":int_to_hex(gas), "gasPrice":int_to_hex(gas_price), "chainId":0}
+        self.tx_conf = {"from": Web3.toChecksumAddress(encode_hex_0x(genesis_addr)), "nonce": int_to_hex(nonce),
+                        "gas": int_to_hex(gas), "gasPrice": int_to_hex(gas_price), "chainId": 0}
 
         # Setup balance for node 0
         node = self.nodes[0]
@@ -58,14 +61,16 @@ class WithdrawDepositTest(ConfluxTestFramework):
         self.tx_conf["to"] = Web3.toChecksumAddress("443c409373ffd5c0bec1dddb7bec830856757b65")
         # deposit 10**18
         tx_data = decode_hex(staking_contract.functions.deposit(10 ** 18).buildTransaction(self.tx_conf)["data"])
-        tx = client.new_tx(value=0, sender=addr, receiver=self.tx_conf["to"], nonce=0, gas=gas, data=tx_data, priv_key=priv_key)
+        tx = client.new_tx(value=0, sender=addr, receiver=self.tx_conf["to"], nonce=0, gas=gas, data=tx_data,
+                           priv_key=priv_key)
         client.send_tx(tx)
         self.wait_for_tx([tx])
         assert_equal(node.cfx_getBankBalance(addr), hex(10 ** 18))
 
         # withdraw 5 * 10**17
         tx_data = decode_hex(staking_contract.functions.withdraw(5 * 10 ** 17).buildTransaction(self.tx_conf)["data"])
-        tx = client.new_tx(value=0, sender=addr, receiver=self.tx_conf["to"], nonce=1, gas=gas, data=tx_data, priv_key=priv_key)
+        tx = client.new_tx(value=0, sender=addr, receiver=self.tx_conf["to"], nonce=1, gas=gas, data=tx_data,
+                           priv_key=priv_key)
         client.send_tx(tx)
         self.wait_for_tx([tx])
         assert_equal(node.cfx_getBankBalance(addr), hex(5 * 10 ** 17))
@@ -91,12 +96,13 @@ class WithdrawDepositTest(ConfluxTestFramework):
                 except AssertionError as _:
                     self.nodes[0].p2p.send_protocol_msg(Transactions(transactions=[tx]))
                 if i == 2:
-                        raise AssertionError("Tx {} not confirmed after 30 seconds".format(tx.hash_hex()))
+                    raise AssertionError("Tx {} not confirmed after 30 seconds".format(tx.hash_hex()))
         # After having optimistic execution, get_receipts may get receipts with not deferred block, these extra blocks
         # ensure that later get_balance can get correct executed balance for all transactions
         client = RpcClient(self.nodes[0])
         for _ in range(5):
             client.generate_block()
+
 
 if __name__ == "__main__":
     WithdrawDepositTest().main()

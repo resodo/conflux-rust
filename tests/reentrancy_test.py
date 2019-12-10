@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+import copy
+from http.client import CannotSendRequest
+
 from easysolc import Solc
 from eth_utils import decode_hex
 from web3 import Web3
@@ -7,18 +10,11 @@ from web3 import Web3
 from conflux.rpc import RpcClient
 from conflux.utils import privtoaddr, parse_as_int
 from test_framework.block_gen_thread import BlockGenThread
-from http.client import CannotSendRequest
 from test_framework.blocktools import create_transaction
 from test_framework.mininode import *
 from test_framework.test_framework import ConfluxTestFramework
 from test_framework.util import *
 
-from test_framework.blocktools import create_transaction
-from test_framework.block_gen_thread import BlockGenThread
-from eth_utils import decode_hex
-from easysolc import Solc
-from web3 import Web3
-import copy
 
 class ReentrancyTest(ConfluxTestFramework):
     REQUEST_BASE = {
@@ -165,8 +161,8 @@ class ReentrancyTest(ConfluxTestFramework):
         node = self.nodes[0]
         client = RpcClient(node)
         staking_contract = solc.get_contract_instance(
-            abi_file = os.path.join(file_dir, "contracts/storage_interest_staking_abi.json"),
-            bytecode_file = os.path.join(file_dir, "contracts/storage_interest_staking_bytecode.dat"),
+            abi_file=os.path.join(file_dir, "contracts/storage_interest_staking_abi.json"),
+            bytecode_file=os.path.join(file_dir, "contracts/storage_interest_staking_bytecode.dat"),
         )
         staking_contract_addr = Web3.toChecksumAddress("443c409373ffd5c0bec1dddb7bec830856757b65")
         tx_conf = copy.deepcopy(ReentrancyTest.REQUEST_BASE)

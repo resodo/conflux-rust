@@ -6,7 +6,7 @@ from web3 import Web3
 from conflux.config import default_config
 from conflux.filter import Filter
 from conflux.rpc import RpcClient
-from conflux.utils import privtoaddr, int_to_hex, ecsign
+from conflux.utils import privtoaddr, int_to_hex, ecsign, decode_hex
 from test_framework.blocktools import encode_hex_0x
 from test_framework.smart_contract_bench_base import SmartContractBenchBase
 from test_framework.util import *
@@ -519,8 +519,8 @@ class ContractBenchTest(SmartContractBenchBase):
         solc = Solc()
         file_dir = os.path.dirname(os.path.realpath(__file__))
         staking_contract = solc.get_contract_instance(
-            abi_file = os.path.join(file_dir, "contracts/storage_interest_staking_abi.json"),
-            bytecode_file = os.path.join(file_dir, "contracts/storage_interest_staking_bytecode.dat"),
+            abi_file=os.path.join(file_dir, "contracts/storage_interest_staking_abi.json"),
+            bytecode_file=os.path.join(file_dir, "contracts/storage_interest_staking_bytecode.dat"),
         )
         staking_contract_addr = Web3.toChecksumAddress("443c409373ffd5c0bec1dddb7bec830856757b65")
 
@@ -536,9 +536,10 @@ class ContractBenchTest(SmartContractBenchBase):
         gas_price = 10
 
         # lock token for genesis account
-        self.tx_conf = {"from":self.sender, "gas":int_to_hex(gas), "gasPrice":int_to_hex(gas_price), "chainId":0}
+        self.tx_conf = {"from": self.sender, "gas": int_to_hex(gas), "gasPrice": int_to_hex(gas_price), "chainId": 0}
         self.tx_conf['to'] = staking_contract_addr
-        tx_data = decode_hex(staking_contract.functions.deposit(1000000 * 10 ** 18).buildTransaction(self.tx_conf)["data"])
+        tx_data = decode_hex(
+            staking_contract.functions.deposit(1000000 * 10 ** 18).buildTransaction(self.tx_conf)["data"])
         tx = self.rpc.new_tx(value=0, receiver=staking_contract_addr, data=tx_data, gas=gas, gas_price=gas_price)
         self.rpc.send_tx(tx, True)
 
@@ -549,11 +550,14 @@ class ContractBenchTest(SmartContractBenchBase):
             self.pri.append(priv_key)
             transaction = self.rpc.new_tx(sender=self.sender, receiver=pub_key, value=1000000 * 10 ** 18,
                                           priv_key=self.priv_key)
-             self.rpc.send_tx(transaction, True)
+            self.rpc.send_tx(transaction, True)
             # deposit 10000 tokens
-            tx_data = decode_hex(staking_contract.functions.deposit(10000 * 10 ** 18).buildTransaction(self.tx_conf)["data"])
-            tx = self.rpc.new_tx(value=0, sender=pub_key, receiver=self.tx_conf["to"], gas=gas, data=tx_data, priv_key=priv_key)
+            tx_data = decode_hex(
+                staking_contract.functions.deposit(10000 * 10 ** 18).buildTransaction(self.tx_conf)["data"])
+            tx = self.rpc.new_tx(value=0, sender=pub_key, receiver=self.tx_conf["to"], gas=gas, data=tx_data,
+                                 priv_key=priv_key)
             self.rpc.send_tx(tx)
+
         self.tx_conf = {"from": self.sender, "gas": int_to_hex(gas), "gasPrice": int_to_hex(gas_price), "chainId": 0}
         self.filter = Filter(from_epoch="earliest", to_epoch="latest_mined")
         self.testEventContract()
@@ -571,11 +575,14 @@ class ContractBenchTest(SmartContractBenchBase):
         self.testDaiJoinContract()
         self.log.info("Pass")
 
+
     def address_to_topic(self, address):
         return "0x" + address[2:].zfill(64)
 
+
     def number_to_topic(self, number):
         return "0x" + ("%x" % number).zfill(64)
+
 
     def deploy_contract(self, sender, priv_key, data_hex):
         tx = self.rpc.new_contract_tx(receiver="", data_hex=data_hex, sender=sender, priv_key=priv_key)
@@ -585,12 +592,14 @@ class ContractBenchTest(SmartContractBenchBase):
         assert_is_hex_string(address)
         return receipt, address
 
+
     def call_contract(self, sender, priv_key, contract, data_hex, value=0):
         tx = self.rpc.new_contract_tx(receiver=contract, data_hex=data_hex, sender=sender, priv_key=priv_key,
                                       value=value)
         assert_equal(self.rpc.send_tx(tx, True), tx.hash_hex())
         receipt = self.rpc.get_transaction_receipt(tx.hash_hex())
         return receipt
+
 
     def fixto64(self, x):
         return '0x' + ('0' * (66 - len(x))) + x[2:]

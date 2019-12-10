@@ -1,6 +1,5 @@
 [
   {
-
     "inputs": [],
     "payable": false,
     "stateMutability": "nonpayable",
@@ -12,17 +11,17 @@
       {
         "indexed": true,
         "internalType": "address",
-				"name": "by",
+        "name": "by",
         "type": "address"
       },
-    {
-    "indexed": true,
-				"internalType": "uint32",
-				"name": "num",
-				"type": "uint32"
-			}
-		],
-		"name": "Called",
+      {
+        "indexed": true,
+        "internalType": "uint32",
+        "name": "num",
+        "type": "uint32"
+      }
+    ],
+    "name": "Called",
     "type": "event"
   },
   {
@@ -31,12 +30,12 @@
       {
         "indexed": true,
         "internalType": "address",
-				"name": "by",
+        "name": "by",
         "type": "address"
       },
       {
         "indexed": false,
-				"internalType": "address",
+        "internalType": "address",
         "name": "data",
         "type": "address"
       }
@@ -44,13 +43,13 @@
     "name": "Constructed",
     "type": "event"
   },
-	{
-		"constant": false,
-		"inputs": [],
-		"name": "foo",
-		"outputs": [],
-		"payable": false,
-		"stateMutability": "nonpayable",
-		"type": "function"
-	}
+  {
+    "constant": false,
+    "inputs": [],
+    "name": "foo",
+    "outputs": [],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
 ]

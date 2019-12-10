@@ -16,10 +16,13 @@ extern crate rand;
 
 pub use self::impls::TreapMap;
 use crate::{
-    block_data_manager::BlockDataManager, consensus::BestInformation,
-    executive, verification::VerificationConfig, vm,
+    block_data_manager::BlockDataManager,
+    consensus::BestInformation,
+    executive,
     statedb::Result as StateDbResult,
     storage::{StateIndex, StateReadonlyIndex, StorageManagerTrait},
+    verification::VerificationConfig,
+    vm,
 };
 use account_cache::AccountCache;
 use cfx_types::{Address, H256, U256};

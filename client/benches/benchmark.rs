@@ -90,13 +90,12 @@ fn txexe_benchmark(c: &mut Criterion) {
             let mut ex = Executive::new(&mut state, &env, &machine, &spec);
             let mut nonce_increased = false;
             b.iter(|| {
-                //ex.transact(
-                &tx,
-                &mut nonce_increased);
-                ex.transact(&tx, &mut nonce_increased,
-                false, /* eth_compatibility_mode */
-            )
-            .unwrap();
+                ex.transact(
+                    &tx,
+                    &mut nonce_increased,
+                    false, /* eth_compatibility_mode */
+                )
+                .unwrap();
                 ex.state.clear();
             })
         })

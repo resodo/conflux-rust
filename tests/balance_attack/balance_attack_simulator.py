@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
+import multiprocessing
 import queue
 import random
-import multiprocessing
-from statistics import mean
 import time
+
 
 class Parameters:
 
@@ -13,7 +13,7 @@ class Parameters:
 
 class NodeLocalView:
 
-    def __init__(self,num_nodes):
+    def __init__(self, num_nodes):
         self.left_subtree_weight = 0
         self.right_subtree_weight = 0
         self.received = set()
@@ -40,8 +40,8 @@ class Simulator:
     def __init__(self, env, threshold):
         self.env = env
         # Parameters checker
-        for attr in ["num_nodes","average_block_period","evil_rate","latency","out_degree","termination_time"]:
-            if not hasattr(self.env,  attr):
+        for attr in ["num_nodes", "average_block_period", "evil_rate", "latency", "out_degree", "termination_time"]:
+            if not hasattr(self.env, attr):
                 print("{} unset".format(attr))
                 exit()
 
@@ -64,16 +64,15 @@ class Simulator:
             peers = set()
             latencies = []
             for j in range(self.env.out_degree):
-                peer = random.randint(0, self.env.num_nodes-1)
+                peer = random.randint(0, self.env.num_nodes - 1)
                 while peer in peers or peer == i:
-                    peer = random.randint(0, self.env.num_nodes-1)
+                    peer = random.randint(0, self.env.num_nodes - 1)
                 peers.add(peer)
                 latencies.append(self.env.latency)
             self.neighbors.append(list(peers))
             self.neighbor_latencies.append(latencies)
 
     def run_test(self):
-
 
         # Initialize the target's tree
         nodes_to_keep_left = list(range(0, self.env.num_nodes, 2))
@@ -94,17 +93,17 @@ class Simulator:
 
             adversary_mined = random.random() < self.env.evil_rate
             if adversary_mined:
-                #print("At %s, Adversary mined block %s" % (timestamp, block_id))
+                # print("At %s, Adversary mined block %s" % (timestamp, block_id))
                 # Decide attack target
                 withhold_queue, chirality, target = (self.left_withheld_blocks_queue, "L", nodes_to_keep_left) \
                     if self.left_withheld_blocks_queue.qsize() + self.left_subtree_weight \
-                       <= self.right_withheld_blocks_queue.qsize() + self.right_subtree_weight else\
+                       <= self.right_withheld_blocks_queue.qsize() + self.right_subtree_weight else \
                     (self.right_withheld_blocks_queue, "R", nodes_to_keep_right)
                 withhold_queue.put(block_id)
             else:
                 # Pick a number from 0 to num_nodes - 1 inclusive.
-                miner = random.randint(0, self.env.num_nodes-1)
-                #print("At %s, Miner %s mined block %s" % (timestamp, miner, block_id))
+                miner = random.randint(0, self.env.num_nodes - 1)
+                # print("At %s, Miner %s mined block %s" % (timestamp, miner, block_id))
                 chirality = self.nodes[miner].chirality
                 # Update attacker and miner's views
                 self.nodes[miner].deliver_block(block_id, chirality)
@@ -151,14 +150,12 @@ class Simulator:
                     for j in target:
                         self.message_queue.put((timestamp, j, anti_chirality, blk))
 
-
     def is_chain_merged(self):
         side_per_node = list(map(
             lambda node: node.chirality,
             self.nodes
         ))
         return (not "L" in side_per_node) or (not "R" in side_per_node)
-
 
     def broadcast(self, time, index, chirality, blk):
         peers = self.neighbors[index]
@@ -167,7 +164,6 @@ class Simulator:
             latency = self.neighbor_latencies[index][i]
             deliver_time = time + latency
             self.message_queue.put((deliver_time, peer, chirality, blk))
-
 
     def process_network_events(self, current_stamp):
         # Parse events and generate new ones in a BFS way
@@ -191,7 +187,6 @@ class Simulator:
         return self.run_test()
 
 
-
 def slave_simulator():
     env = Parameters()
     env.num_nodes = 6
@@ -201,9 +196,10 @@ def slave_simulator():
     env.out_degree = 5
     env.termination_time = 20000
 
-    return Simulator(env,3).main()
+    return Simulator(env, 3).main()
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     cpu_num = multiprocessing.cpu_count()
     repeats = 100
     p = multiprocessing.Pool(cpu_num)
@@ -213,4 +209,4 @@ if __name__=="__main__":
     print("len: %s" % len(attack_last_time))
     print(list(map(lambda percentile: attack_last_time[int((repeats - 1) * percentile / samples)], range(samples + 1))))
     end = time.time()
-    print("Executed in {} seconds".format(end-begin))
+    print("Executed in {} seconds".format(end - begin))

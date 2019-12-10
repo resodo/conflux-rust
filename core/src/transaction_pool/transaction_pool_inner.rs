@@ -4,8 +4,9 @@ use super::{
     impls::TreapMap,
     nonce_pool::{InsertResult, NoncePool, TxWithReadyInfo},
 };
-use crate::verification::VerificationConfig;
-use crate::statedb::Result as StateDbResult;
+use crate::{
+    statedb::Result as StateDbResult, verification::VerificationConfig,
+};
 use cfx_types::{Address, BigEndianHash, H256, H512, U256, U512};
 use metrics::{
     register_meter_with_group, Counter, CounterUsize, Meter, MeterTimer,

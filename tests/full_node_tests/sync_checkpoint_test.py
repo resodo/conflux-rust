@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import os
-import sys
 import random
+import sys
 
 from jsonrpcclient.exceptions import ReceivedErrorResponseError
 
@@ -59,7 +59,6 @@ class SyncCheckpointTests(ConfluxTestFramework):
         sync_blocks(self.nodes, sync_count=False)
 
         client = RpcClient(self.nodes[1])
-
 
         # At epoch 1, block header exists while body not synchronized
         try:

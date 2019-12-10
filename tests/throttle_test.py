@@ -2,10 +2,12 @@
 
 import os
 import time
+
 from jsonrpcclient.exceptions import ReceivedErrorResponseError
 
-from test_framework.test_framework import ConfluxTestFramework
 from conflux.rpc import RpcClient
+from test_framework.test_framework import ConfluxTestFramework
+
 
 class ThrottleRpcTests(ConfluxTestFramework):
     def set_test_params(self):
@@ -93,6 +95,7 @@ class ThrottleRpcTests(ConfluxTestFramework):
             assert "should be throttled"
         except ReceivedErrorResponseError as e:
             assert e.response.message.startswith("throttled in ")
+
 
 if __name__ == "__main__":
     ThrottleRpcTests().main()

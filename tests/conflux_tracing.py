@@ -190,7 +190,7 @@ class ConsensusSnapshot(object):
                     self.peer_id, block.hash, block.adaptive, verified_block.adaptive)
                 assert block.era_block_hash == verified_block.era_block_hash or \
                        block.era_block_hash == DEFAULT_HASH, "peer[{}] block[{}] era_block_hash[{}], expect [{}]".format(
-                        self.peer_id, block.hash, block.era_block_hash, verified_block.era_block_hash)
+                    self.peer_id, block.hash, block.era_block_hash, verified_block.era_block_hash)
                 assert block.past_era_weight == verified_block.past_era_weight, "peer[{}] block[{}] past_era_weight[{}], expect [{}]".format(
                     self.peer_id, block.hash, block.past_era_weight, verified_block.past_era_weight)
         elif block.hash in self.block_status_unverified:
@@ -208,7 +208,7 @@ class ConsensusSnapshot(object):
                     assert block.era_block_hash == unverified_block.era_block_hash or \
                            block.era_block_hash == DEFAULT_HASH or \
                            unverified_block.era_block_hash == DEFAULT_HASH, "peer[{}] block[{}] era_block_hash[{}], expect [{}]".format(
-                            self.peer_id, block.hash, block.era_block_hash, unverified_block.era_block_hash)
+                        self.peer_id, block.hash, block.era_block_hash, unverified_block.era_block_hash)
                     assert block.past_era_weight == unverified_block.past_era_weight, "peer[{}] block[{}] past_era_weight[{}], expect [{}]".format(
                         self.peer_id, block.hash, block.past_era_weight, unverified_block.past_era_weight)
         else:
@@ -389,7 +389,7 @@ class ConfluxTracing(ConfluxTestFramework):
                 alive_peer_indices = alive_peer_indices.get('NormalSyncPhase', [])
                 if self.options.archive:
                     assert len(alive_peer_indices) * \
-                        2 > self.num_nodes, "alive[{}] total[{}]".format(len(alive_peer_indices), self.num_nodes)
+                           2 > self.num_nodes, "alive[{}] total[{}]".format(len(alive_peer_indices), self.num_nodes)
                 chosen_peer = alive_peer_indices[random.randint(
                     0, len(alive_peer_indices) - 1)]
                 txs = self._generate_txs(chosen_peer, NUM_TX_PER_BLOCK)
