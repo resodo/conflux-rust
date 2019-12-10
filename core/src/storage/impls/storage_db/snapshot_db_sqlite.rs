@@ -5,12 +5,15 @@
 pub struct SnapshotDbSqlite {
     // Option because we need an empty snapshot db for empty snapshot.
     maybe_db: Option<SqliteConnection>,
-    height: i64,
+    // FIXME: load / save on open / set.
+    snapshot_info: SnapshotInfo,
 }
 
 pub struct SnapshotDbStatements {
     kvdb_statements: KvdbSqliteStatements,
     mpt_statements: KvdbSqliteStatements,
+    delta_mpt_set_keys_statements: KvdbSqliteStatements,
+    // TODO Keep delta_mpt_delete_keys_statements here.
 }
 
 lazy_static! {
@@ -22,9 +25,17 @@ lazy_static! {
             false,
         )
         .unwrap();
+        let delta_mpt_set_keys_statements =
+            KvdbSqliteStatements::make_statements(
+                &["value"],
+                &["BLOB"],
+                SnapshotDbSqlite::DELTA_KV_INSERT_TABLE_NAME,
+                false,
+            )
+            .unwrap();
         let mpt_statements = KvdbSqliteStatements::make_statements(
-            &["node_rlp", "subtree_kv_rlp_size"],
-            &["BLOB", "INTEGER"],
+            &["node_rlp"],
+            &["BLOB"],
             SnapshotDbSqlite::SNAPSHOT_MPT_TABLE_NAME,
             false,
         )
@@ -33,6 +44,7 @@ lazy_static! {
         SnapshotDbStatements {
             kvdb_statements,
             mpt_statements,
+            delta_mpt_set_keys_statements,
         }
     };
 }
@@ -121,8 +133,14 @@ impl SnapshotDbTrait for SnapshotDbSqlite {
     fn get_null_snapshot() -> Self {
         Self {
             maybe_db: None,
-            height: 0,
+            snapshot_info: SnapshotInfo::genesis_snapshot_info(),
         }
+    }
+
+    fn get_snapshot_info(&self) -> &SnapshotInfo { &self.snapshot_info }
+
+    fn set_snapshot_info(&mut self, snapshot_info: SnapshotInfo) {
+        self.snapshot_info = snapshot_info;
     }
 
     fn open(snapshot_path: &str) -> Result<Option<SnapshotDbSqlite>> {
@@ -135,21 +153,22 @@ impl SnapshotDbTrait for SnapshotDbSqlite {
         if file_exists {
             return Ok(Some(SnapshotDbSqlite {
                 maybe_db: Some(sqlite_open_result?),
-                height: 0,
+                // FIXME: load snapshot info from db.
+                snapshot_info: SnapshotInfo::genesis_snapshot_info(),
             }));
         } else {
             return Ok(None);
         }
-        // FIXME: load height.
     }
 
-    fn create(snapshot_path: &str, height: i64) -> Result<SnapshotDbSqlite> {
+    fn create(snapshot_path: &str) -> Result<SnapshotDbSqlite> {
         let mut ok_result = Ok(SnapshotDbSqlite {
             maybe_db: Some(SqliteConnection::create_and_open(
                 &snapshot_path,
                 SqliteConnection::default_open_flags(),
             )?),
-            height,
+            // FIXME: set snapshot info at creation or ..?
+            snapshot_info: SnapshotInfo::genesis_snapshot_info(),
         });
 
         {
@@ -162,7 +181,7 @@ impl SnapshotDbTrait for SnapshotDbSqlite {
                         .kvdb_statements
                         .stmts_main_table
                         .create_table,
-                    &[&&Self::SNAPSHOT_KV_TABLE_NAME as SqlBindableRef],
+                    SQLITE_NO_PARAM,
                 )?
                 .finish_ignore_rows()?;
             snapshot_db
@@ -171,7 +190,7 @@ impl SnapshotDbTrait for SnapshotDbSqlite {
                         .mpt_statements
                         .stmts_main_table
                         .create_table,
-                    &[&&Self::SNAPSHOT_MPT_TABLE_NAME as SqlBindableRef],
+                    SQLITE_NO_PARAM,
                 )?
                 .finish_ignore_rows()?;
             // FIXME: create index.
@@ -182,23 +201,34 @@ impl SnapshotDbTrait for SnapshotDbSqlite {
 
     // FIXME: use a mechanism with rate limit.
     fn direct_merge(
-        &mut self, delta_mpt: &DeltaMptInserter,
+        &mut self, delta_mpt: &DeltaMptIterator,
     ) -> Result<MerkleHash> {
         {
             let sqlite = self.maybe_db.as_mut().unwrap();
             // FIXME: maintain snapshot_key_value_delete?
-            sqlite.execute(
-                "DELETE FROM :snapshot_table_name WHERE KEY IN (SELECT :delta_kv_delete_table_name.key)",
-                &[&&Self::SNAPSHOT_KV_TABLE_NAME as SqlBindableRef, &&Self::DELTA_KV_DELETE_TABLE_NAME],
-            )?.finish_ignore_rows()?;
-            sqlite.execute(
-                "INSERT OR REPLACE INTO :snapshot_table_name (key, value, version) SELECT \
-            :delta_kv_insert_table_name.key, :delta_kv_insert_table_name.value, :version",
-                &[
-                    &&Self::SNAPSHOT_KV_TABLE_NAME as SqlBindableRef,
-                    &&Self::DELTA_KV_INSERT_TABLE_NAME,
-                    &self.height]
-            )?.finish_ignore_rows()?;
+            sqlite
+                .execute(
+                    format!(
+                        "DELETE FROM {} WHERE KEY IN (SELECT key FROM {})",
+                        Self::SNAPSHOT_KV_TABLE_NAME,
+                        Self::DELTA_KV_DELETE_TABLE_NAME
+                    )
+                    .as_str(),
+                    SQLITE_NO_PARAM,
+                )?
+                .finish_ignore_rows()?;
+            sqlite
+                .execute(
+                    format!(
+                        "INSERT OR REPLACE INTO {} (key, value) \
+                         SELECT key, value FROM {}",
+                        Self::SNAPSHOT_KV_TABLE_NAME,
+                        Self::DELTA_KV_INSERT_TABLE_NAME
+                    )
+                    .as_str(),
+                    SQLITE_NO_PARAM,
+                )?
+                .finish_ignore_rows()?;
         }
 
         {
@@ -213,7 +243,7 @@ impl SnapshotDbTrait for SnapshotDbSqlite {
 
     fn copy_and_merge(
         &mut self, old_snapshot_db: &mut SnapshotDbSqlite,
-        delta_mpt: &DeltaMptInserter,
+        delta_mpt: &DeltaMptIterator,
     ) -> Result<MerkleHash>
     {
         let mut base_mpt = old_snapshot_db.open_snapshot_mpt_read_only()?;
@@ -233,7 +263,7 @@ impl SnapshotDbSqlite {
                 None => None,
                 Some(conn) => Some(conn.try_clone()?),
             },
-            height: self.height,
+            snapshot_info: self.snapshot_info.clone(),
         })
     }
 
@@ -266,15 +296,10 @@ impl SnapshotDbSqlite {
     ) -> Result<SnapshotMptValue> {
         let key = row.read::<Vec<u8>>(0)?;
         let value = row.read::<Vec<u8>>(1)?;
-        let subtree_size = row.read::<i64>(2)?;
-        Ok((
-            key.into_boxed_slice(),
-            value.into_boxed_slice(),
-            subtree_size,
-        ))
+        Ok((key.into_boxed_slice(), value.into_boxed_slice()))
     }
 
-    fn open_snapshot_mpt_for_write(
+    pub fn open_snapshot_mpt_for_write(
         &mut self,
     ) -> Result<
         SnapshotMpt<
@@ -331,7 +356,7 @@ impl SnapshotDbSqlite {
     // FIXME: add rate limit.
     // FIXME: how to handle row_id, this should go to the merkle tree?
     pub fn dump_delta_mpt(
-        &mut self, delta_mpt: &DeltaMptInserter,
+        &mut self, delta_mpt: &DeltaMptIterator,
     ) -> Result<()> {
         let sqlite = self.maybe_db.as_mut().unwrap();
         sqlite
@@ -347,10 +372,10 @@ impl SnapshotDbSqlite {
         sqlite
             .execute(
                 &SNAPSHOT_DB_STATEMENTS
-                    .kvdb_statements
+                    .delta_mpt_set_keys_statements
                     .stmts_main_table
                     .create_table,
-                &[&&Self::DELTA_KV_INSERT_TABLE_NAME as SqlBindableRef],
+                SQLITE_NO_PARAM,
             )?
             .finish_ignore_rows()?;
 
@@ -364,18 +389,27 @@ impl SnapshotDbSqlite {
         let sqlite = self.maybe_db.as_mut().unwrap();
         sqlite
             .execute(
-                SNAPSHOT_DB_STATEMENTS
-                    .kvdb_statements
+                &SNAPSHOT_DB_STATEMENTS
+                    .delta_mpt_set_keys_statements
                     .stmts_main_table
                     .drop_table,
-                &[&&Self::DELTA_KV_INSERT_TABLE_NAME as SqlBindableRef],
+                SQLITE_NO_PARAM,
             )?
             .finish_ignore_rows()?;
 
+        let mut strfmt_vars = HashMap::new();
+        strfmt_vars.insert(
+            "table_name".to_string(),
+            Self::DELTA_KV_DELETE_TABLE_NAME.to_string(),
+        );
         sqlite
             .execute(
-                KvdbSqliteStatements::DROP_TABLE_STATEMENT,
-                &[&&Self::DELTA_KV_DELETE_TABLE_NAME as SqlBindableRef],
+                strfmt(
+                    KvdbSqliteStatements::DROP_TABLE_STATEMENT,
+                    &strfmt_vars,
+                )?
+                .as_str(),
+                SQLITE_NO_PARAM,
             )?
             .finish_ignore_rows()?;
 
@@ -404,15 +438,10 @@ impl<'a> KVInserter<(Vec<u8>, Box<[u8]>)> for DeltaMptDumperSqlite<'a> {
                 .unwrap()
                 .execute(
                     &SNAPSHOT_DB_STATEMENTS
-                        .kvdb_statements
+                        .delta_mpt_set_keys_statements
                         .stmts_main_table
                         .put,
-                    &[
-                        &&SnapshotDbSqlite::DELTA_KV_INSERT_TABLE_NAME
-                            as SqlBindableRef,
-                        &&key,
-                        &&value,
-                    ],
+                    &[&&key as SqlBindableRef, &&value],
                 )?
                 .finish_ignore_rows()?;
         } else {
@@ -445,15 +474,13 @@ use super::{
         super::storage_db::{
             KeyValueDbToOwnedReadTrait, KeyValueDbTraitOwnedRead,
             KeyValueDbTypes, OwnedReadImplFamily, ReadImplFamily,
-            SingleWriterImplFamily, SnapshotDbTrait, SnapshotMptDbValue,
-            SnapshotMptTraitReadOnly, SnapshotMptTraitSingleWriter,
-            SnapshotMptValue,
+            SingleWriterImplFamily, SnapshotDbTrait, SnapshotInfo,
+            SnapshotMptDbValue, SnapshotMptTraitReadOnly,
+            SnapshotMptTraitSingleWriter, SnapshotMptValue,
         },
         errors::*,
-        multi_version_merkle_patricia_trie::merkle_patricia_trie::{
-            cow_node_ref::KVInserter, mpt_merger::MptMerger,
-        },
-        storage_manager::DeltaMptInserter,
+        merkle_patricia_trie::{KVInserter, MptMerger},
+        storage_manager::DeltaMptIterator,
     },
     kvdb_sqlite::{
         KvdbSqlite, KvdbSqliteBorrowMut, KvdbSqliteBorrowMutReadOnly,
@@ -465,4 +492,5 @@ use super::{
 use crate::storage::impls::storage_db::sqlite::SQLITE_NO_PARAM;
 use primitives::MerkleHash;
 use sqlite::Statement;
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
+use strfmt::strfmt;

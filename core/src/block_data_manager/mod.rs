@@ -6,23 +6,23 @@ use crate::{
     cache_config::CacheConfig,
     cache_manager::{CacheId, CacheManager, CacheSize},
     ext_db::SystemDB,
-    parameters::consensus::DEFERRED_STATE_EPOCH_COUNT,
     pow::TargetDifficultyManager,
     storage::{
-        state_manager::{SnapshotAndEpochIdRef, StateManagerTrait},
-        StorageManager,
+        state_manager::StateIndex, utils::guarded_value::*,
+        StateRootWithAuxInfo, StorageManager, StorageManagerTrait,
+        StorageTrait,
     },
 };
 use cfx_types::{Bloom, H256};
 use malloc_size_of::{new_malloc_size_ops, MallocSizeOf};
-use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
+use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard};
 use primitives::{
     block::CompactBlock,
     receipt::{
         Receipt, TRANSACTION_OUTCOME_EXCEPTION_WITH_NONCE_BUMPING,
         TRANSACTION_OUTCOME_SUCCESS,
     },
-    Block, BlockHeader, SignedTransaction, TransactionAddress,
+    Block, BlockHeader, EpochId, SignedTransaction, TransactionAddress,
     TransactionWithSignature,
 };
 use rlp::DecoderError;
@@ -38,7 +38,7 @@ use crate::block_data_manager::{
     db_manager::DBManager, tx_data_manager::TransactionDataManager,
 };
 pub use block_data_types::*;
-use std::{hash::Hash, path::Path};
+use std::{hash::Hash, path::Path, time::Duration};
 
 use metrics::{register_meter_with_group, Meter, MeterTimer};
 lazy_static! {
@@ -54,20 +54,20 @@ pub struct BlockDataManager {
     compact_blocks: RwLock<HashMap<H256, CompactBlock>>,
     block_receipts: RwLock<HashMap<H256, BlockReceiptsInfo>>,
     transaction_addresses: RwLock<HashMap<H256, TransactionAddress>>,
-    /// Caching for receipts_root and logs_bloom.
-    /// It is not deferred, i.e., indexed by the hash of the pivot block
-    /// that produces the result when executed.
+    /// Caching for receipts_root and logs_bloom for epochs after
+    /// cur_era_genesis. It is not deferred, i.e., indexed by the hash of
+    /// the pivot block that produces the result when executed.
     /// It is also used for checking whether an epoch has been executed.
     /// It can be updated, i.e., adding new items, in the following cases:
     /// 1) When a new epoch gets executed in normal execution;
     /// 2) After syncing snapshot, we need to update execution commitment
     ///    for pivot blocks around snapshot block based on blaming information;
     /// 3) After recovering block graph from db, update execution commitment
-    ///    according to execution info from db;
-    /// 4) In BlockDataManager::new(), update execution commitment of true
-    ///    genesis block if it is the current era genesis in BlockDataManager.
+    ///    from db;
+    /// 4) In BlockDataManager::new(), update execution commitment
+    ///    of true_genesis_block.
     epoch_execution_commitments:
-        RwLock<HashMap<H256, EpochExecutionCommitments>>,
+        RwLock<HashMap<H256, EpochExecutionCommitment>>,
     epoch_execution_contexts: RwLock<HashMap<H256, EpochExecutionContext>>,
 
     invalid_block_set: RwLock<HashSet<H256>>,
@@ -80,8 +80,8 @@ pub struct BlockDataManager {
     tx_data_manager: TransactionDataManager,
     db_manager: DBManager,
 
-    pub genesis_block: Arc<Block>,
-    pub true_genesis_block: Arc<Block>,
+    /// This is the original genesis block.
+    pub true_genesis: Arc<Block>,
     pub storage_manager: Arc<StorageManager>,
     cache_man: Arc<Mutex<CacheManager<CacheId>>>,
     pub target_difficulty_manager: TargetDifficultyManager,
@@ -89,12 +89,11 @@ pub struct BlockDataManager {
 
 impl BlockDataManager {
     pub fn new(
-        cache_conf: CacheConfig, genesis_block: Arc<Block>, db: Arc<SystemDB>,
+        cache_conf: CacheConfig, true_genesis: Arc<Block>, db: Arc<SystemDB>,
         storage_manager: Arc<StorageManager>,
         worker_pool: Arc<Mutex<ThreadPool>>, config: DataManagerConfiguration,
     ) -> Self
     {
-        let genesis_hash = genesis_block.block_header.hash();
         let mb = 1024 * 1024;
         let max_cache_size = cache_conf.ledger_mb() * mb;
         let pref_cache_size = max_cache_size * 3 / 4;
@@ -103,8 +102,10 @@ impl BlockDataManager {
             max_cache_size,
             3 * mb,
         )));
-        let tx_data_manager =
-            TransactionDataManager::new(config.tx_cache_count, worker_pool);
+        let tx_data_manager = TransactionDataManager::new(
+            config.tx_cache_index_maintain_timeout,
+            worker_pool,
+        );
         let db_manager = match config.db_type {
             DbType::Rocksdb => DBManager::new_from_rocksdb(db),
             DbType::Sqlite => {
@@ -112,7 +113,7 @@ impl BlockDataManager {
             }
         };
 
-        let mut data_man = Self {
+        let data_man = Self {
             block_headers: RwLock::new(HashMap::new()),
             blocks: RwLock::new(HashMap::new()),
             compact_blocks: Default::default(),
@@ -121,100 +122,86 @@ impl BlockDataManager {
             epoch_execution_commitments: Default::default(),
             epoch_execution_contexts: Default::default(),
             invalid_block_set: Default::default(),
-            genesis_block: genesis_block.clone(),
-            true_genesis_block: genesis_block.clone(),
+            true_genesis: true_genesis.clone(),
             storage_manager,
             cache_man,
             instance_id: Mutex::new(0),
             config,
             target_difficulty_manager: TargetDifficultyManager::new(),
-            cur_consensus_era_genesis_hash: RwLock::new(genesis_hash),
-            cur_consensus_era_stable_hash: RwLock::new(genesis_hash),
+            cur_consensus_era_genesis_hash: RwLock::new(true_genesis.hash()),
+            cur_consensus_era_stable_hash: RwLock::new(true_genesis.hash()),
             tx_data_manager,
             db_manager,
         };
 
         data_man.initialize_instance_id();
 
-        if let Some((checkpoint_hash, stable_hash)) =
-            data_man.db_manager.checkpoint_hashes_from_db()
-        {
-            if checkpoint_hash != genesis_block.block_header.hash() {
-                if let Some(checkpoint_block) = data_man.block_by_hash(
-                    &checkpoint_hash,
-                    false, /* update_cache */
-                ) {
-                    if data_man.state_exists(&checkpoint_hash) {
-                        let mut cur_hash =
-                            *checkpoint_block.block_header.parent_hash();
-                        for _ in 0..DEFERRED_STATE_EPOCH_COUNT - 1 {
-                            assert_ne!(cur_hash, H256::default());
-                            let cur_block = data_man.block_by_hash(
-                                &cur_hash, false, /* update_cache */
-                            );
-                            if cur_block.is_some()
-                                && data_man.state_exists(&cur_hash)
-                            {
-                                let cur_block = cur_block.unwrap();
-                                cur_hash =
-                                    *cur_block.block_header.parent_hash();
-                            } else {
-                                panic!("recovery checkpoint from disk failed.");
-                            }
-                        }
-
-                        *data_man.cur_consensus_era_genesis_hash.write() =
-                            checkpoint_hash;
-                        *data_man.cur_consensus_era_stable_hash.write() =
-                            stable_hash;
-                        data_man.genesis_block = checkpoint_block;
-                    }
+        let cur_era_genesis_hash =
+            match data_man.db_manager.checkpoint_hashes_from_db() {
+                None => true_genesis.hash(),
+                Some((checkpoint_hash, stable_hash)) => {
+                    *data_man.cur_consensus_era_genesis_hash.write() =
+                        checkpoint_hash;
+                    *data_man.cur_consensus_era_stable_hash.write() =
+                        stable_hash;
+                    checkpoint_hash
                 }
-            }
-        }
+            };
 
-        // FIXME: Set execution context and past_num_blocks with data on disk
-        data_man.insert_epoch_execution_context(
-            data_man.genesis_block.hash(),
-            EpochExecutionContext {
-                start_block_number: 0,
-            },
-            true,
-        );
-
-        data_man
-            .insert_block(data_man.genesis_block(), true /* persistent */);
-
-        if data_man.genesis_block().hash() == genesis_block.hash() {
+        if cur_era_genesis_hash == data_man.true_genesis.hash() {
+            // Only insert block body for true genesis
+            data_man.insert_block(
+                data_man.true_genesis.clone(),
+                true, /* persistent */
+            );
+            // Initialize ExecutionContext for true genesis
+            data_man.insert_epoch_execution_context(
+                cur_era_genesis_hash,
+                EpochExecutionContext {
+                    start_block_number: 0,
+                },
+                true,
+            );
             // persist local_block_info for true genesis
             data_man.db_manager.insert_local_block_info_to_db(
-                &genesis_block.hash(),
+                &data_man.true_genesis.hash(),
                 &LocalBlockInfo::new(
                     BlockStatus::Valid,
                     0,
                     data_man.get_instance_id(),
                 ),
             );
-            data_man.insert_epoch_execution_commitments(
-                data_man.genesis_block.hash(),
-                *data_man.genesis_block.block_header.deferred_receipts_root(),
+            data_man.insert_epoch_execution_commitment(
+                data_man.true_genesis.hash(),
+                data_man.true_genesis_state_root(),
+                *data_man.true_genesis.block_header.deferred_receipts_root(),
                 *data_man
-                    .genesis_block
+                    .true_genesis
                     .block_header
                     .deferred_logs_bloom_hash(),
             );
         } else {
+            // Recover ExecutionContext for cur_era_genesis from db
+            data_man.insert_epoch_execution_context(
+                cur_era_genesis_hash,
+                data_man
+                    .get_epoch_execution_context(&cur_era_genesis_hash)
+                    .expect("ExecutionContext exists for cur_era_genesis"),
+                false, /* Not persistent because it's already in db */
+            );
             // for other era genesis, we need to change the instance_id
             if let Some(mut local_block_info) = data_man
                 .db_manager
-                .local_block_info_from_db(&data_man.genesis_block().hash())
+                .local_block_info_from_db(&cur_era_genesis_hash)
             {
                 local_block_info.instance_id = data_man.get_instance_id();
                 data_man.db_manager.insert_local_block_info_to_db(
-                    &data_man.genesis_block().hash(),
+                    &cur_era_genesis_hash,
                     &local_block_info,
                 );
             }
+            // The commitments of cur_era_genesis will be recovered in
+            // `construct_pivot_state` with other epochs
         }
 
         data_man
@@ -237,13 +224,14 @@ impl BlockDataManager {
             // bodies. And we should change the instance_id of genesis block to
             // current one.
             *my_instance_id += 1;
-            if let Some(mut local_block_info) = self
-                .db_manager
-                .local_block_info_from_db(&self.genesis_block().hash())
+            if let Some(mut local_block_info) =
+                self.db_manager.local_block_info_from_db(
+                    &self.get_cur_consensus_era_genesis_hash(),
+                )
             {
                 local_block_info.instance_id = *my_instance_id;
                 self.db_manager.insert_local_block_info_to_db(
-                    &self.genesis_block().hash(),
+                    &self.get_cur_consensus_era_genesis_hash(),
                     &local_block_info,
                 );
             }
@@ -253,7 +241,20 @@ impl BlockDataManager {
         self.db_manager.insert_instance_id_to_db(*my_instance_id);
     }
 
-    pub fn genesis_block(&self) -> Arc<Block> { self.genesis_block.clone() }
+    /// This will return the state root of true genesis block.
+    pub fn true_genesis_state_root(&self) -> StateRootWithAuxInfo {
+        let true_genesis_hash = self.true_genesis.hash();
+        self.storage_manager
+            .get_state_no_commit(StateIndex::new_for_readonly(
+                &true_genesis_hash,
+                &StateRootWithAuxInfo::genesis(&true_genesis_hash),
+            ))
+            .unwrap()
+            .unwrap()
+            .get_state_root()
+            .unwrap()
+            .unwrap()
+    }
 
     pub fn transaction_by_hash(
         &self, hash: &H256,
@@ -574,21 +575,6 @@ impl BlockDataManager {
         self.db_manager.terminals_from_db()
     }
 
-    /// This only inserts reference because the object will be stored in
-    /// ConsensusInner
-    pub fn insert_consensus_graph_execution_info_to_db(
-        &self, hash: &H256, info: &ConsensusGraphExecutionInfo,
-    ) {
-        self.db_manager
-            .insert_consensus_graph_execution_info_to_db(hash, info)
-    }
-
-    pub fn consensus_graph_execution_info_from_db(
-        &self, hash: &H256,
-    ) -> Option<ConsensusGraphExecutionInfo> {
-        self.db_manager.consensus_graph_execution_info_from_db(hash)
-    }
-
     pub fn insert_epoch_set_hashes_to_db(
         &self, epoch_number: u64, epoch_set: &Vec<H256>,
     ) {
@@ -602,7 +588,7 @@ impl BlockDataManager {
         if epoch_number != 0 {
             self.db_manager.epoch_set_hashes_from_db(epoch_number)
         } else {
-            Some(vec![self.true_genesis_block.hash()])
+            Some(vec![self.true_genesis.hash()])
         }
     }
 
@@ -647,67 +633,78 @@ impl BlockDataManager {
         )
     }
 
-    pub fn insert_epoch_execution_commitments(
-        &self, block_hash: H256, receipts_root: H256, logs_bloom_hash: H256,
-    ) {
-        self.epoch_execution_commitments.write().insert(
+    /// TODO We can avoid persisting execution_commitments for blocks
+    /// not on the pivot chain after a checkpoint
+    pub fn insert_epoch_execution_commitment(
+        &self, block_hash: H256,
+        state_root_with_aux_info: StateRootWithAuxInfo, receipts_root: H256,
+        logs_bloom_hash: H256,
+    )
+    {
+        let commitment = EpochExecutionCommitment {
+            state_root_with_aux_info,
+            receipts_root,
+            logs_bloom_hash,
+        };
+        self.insert(
             block_hash,
-            EpochExecutionCommitments {
-                receipts_root,
-                logs_bloom_hash,
+            commitment,
+            &self.epoch_execution_commitments,
+            |key, value| {
+                self.db_manager
+                    .insert_consensus_graph_epoch_execution_commitment_to_db(
+                        key, value,
+                    )
             },
+            None,
+            true,
         );
     }
 
-    /// Get in-mem execution commitments.
-    pub fn get_epoch_execution_commitments(
+    /// Get in-mem execution commitment.
+    pub fn get_epoch_execution_commitment(
         &self, block_hash: &H256,
-    ) -> Option<EpochExecutionCommitments> {
+    ) -> GuardedValue<
+        RwLockReadGuard<'_, HashMap<H256, EpochExecutionCommitment>>,
+        NonCopy<Option<&'_ EpochExecutionCommitment>>,
+    > {
+        let read_lock = self.epoch_execution_commitments.read();
+        let (read_lock, derefed) = GuardedValue::new_derefed(read_lock).into();
+        GuardedValue::new(read_lock, NonCopy(derefed.0.get(block_hash)))
+    }
+
+    /// Load commitment from db.
+    /// The caller should ensure that the loaded commitment is after
+    /// cur_era_genesis and can be garbage-collected by checkpoint.
+    pub fn load_epoch_execution_commitment_from_db(
+        &self, block_hash: &H256,
+    ) -> Option<EpochExecutionCommitment> {
+        let commitment = self
+            .db_manager
+            .consensus_graph_epoch_execution_commitment_from_db(block_hash)?;
         self.epoch_execution_commitments
-            .read()
-            .get(block_hash)
-            .map(Clone::clone)
+            .write()
+            .insert(*block_hash, commitment.clone());
+        Some(commitment)
     }
 
-    /// Check in-mem execution commitments first. If missing, use on-disk
-    /// execution info of some later block to recover it.
-    pub fn get_epoch_execution_commitments_with_db(
-        &self, epoch_hash: &H256,
-    ) -> Option<EpochExecutionCommitments> {
-        let maybe_commitments =
-            self.get_epoch_execution_commitments(epoch_hash);
-        if maybe_commitments.is_some() {
-            return maybe_commitments;
-        }
-
-        // Double check if `epoch_hash` is on the pivot chain on disk
-        let epoch_number = self.block_header_by_hash(epoch_hash)?.height();
-        let pivot_hash =
-            self.epoch_set_hashes_from_db(epoch_number)?.last()?.clone();
-        if *epoch_hash != pivot_hash {
-            debug!("get_epoch_execution_commitments: block is not in memory and not pivot on disk. \
-                block_hash={:?} pivot_block={:?}", epoch_hash, pivot_hash);
-            return None;
-        }
-
-        // find the pivot block whose deferred block is `epoch_hash` and use its
-        // execution info to recover the execution commitments for `epoch_hash`
-        let exec_pivot_hash = self
-            .epoch_set_hashes_from_db(
-                epoch_number + DEFERRED_STATE_EPOCH_COUNT,
-            )?
-            .last()?
-            .clone();
-        let exec_execution_info =
-            self.consensus_graph_execution_info_from_db(&exec_pivot_hash)?;
-        Some(EpochExecutionCommitments {
-            receipts_root: exec_execution_info.original_deferred_state_root,
-            logs_bloom_hash: exec_execution_info
-                .original_deferred_logs_bloom_hash,
-        })
+    /// Get persisted execution commitment.
+    /// It will check db if it's missing in db.
+    pub fn get_epoch_execution_commitment_with_db(
+        &self, block_hash: &H256,
+    ) -> Option<EpochExecutionCommitment> {
+        self.get_epoch_execution_commitment(block_hash).map_or_else(
+            || {
+                self.db_manager
+                    .consensus_graph_epoch_execution_commitment_from_db(
+                        block_hash,
+                    )
+            },
+            |maybe_ref| Some(maybe_ref.clone()),
+        )
     }
 
-    pub fn remove_epoch_execution_commitments(&self, block_hash: &H256) {
+    pub fn remove_epoch_execution_commitment(&self, block_hash: &H256) {
         self.epoch_execution_commitments.write().remove(block_hash);
     }
 
@@ -717,17 +714,7 @@ impl BlockDataManager {
 
     pub fn epoch_executed(&self, epoch_hash: &H256) -> bool {
         // `block_receipts_root` is not computed when recovering from db
-        self.get_epoch_execution_commitments(epoch_hash).is_some()
-            && self.state_exists(epoch_hash)
-    }
-
-    /// Return `true` if storage contains the state for the given epoch.
-    ///
-    /// This function will panic if the storage returns error.
-    pub fn state_exists(&self, epoch_hash: &H256) -> bool {
-        self.storage_manager
-            .contains_state(SnapshotAndEpochIdRef::new(epoch_hash, None))
-            .expect("State DB failure")
+        self.get_epoch_execution_commitment(epoch_hash).is_some()
     }
 
     /// Check if all executed results of an epoch exist
@@ -793,10 +780,12 @@ impl BlockDataManager {
     }
 
     /// Check if a block is already marked as invalid.
-    pub fn verified_invalid(&self, block_hash: &H256) -> bool {
+    pub fn verified_invalid(
+        &self, block_hash: &H256,
+    ) -> (bool, Option<LocalBlockInfo>) {
         let invalid_block_set = self.invalid_block_set.upgradable_read();
         if invalid_block_set.contains(block_hash) {
-            return true;
+            return (true, None);
         } else {
             if let Some(block_info) =
                 self.db_manager.local_block_info_from_db(block_hash)
@@ -805,13 +794,13 @@ impl BlockDataManager {
                     BlockStatus::Invalid => {
                         RwLockUpgradableReadGuard::upgrade(invalid_block_set)
                             .insert(*block_hash);
-                        return true;
+                        return (true, Some(block_info));
                     }
-                    _ => return false,
+                    _ => return (false, Some(block_info)),
                 }
             } else {
                 // No status on disk, so the block is not marked invalid before
-                return false;
+                return (false, None);
             }
         }
     }
@@ -891,10 +880,7 @@ impl BlockDataManager {
         exeuction_contexts.shrink_to_fit();
     }
 
-    pub fn cache_gc(&self) {
-        self.block_cache_gc();
-        self.tx_data_manager.tx_cache_gc();
-    }
+    pub fn cache_gc(&self) { self.block_cache_gc(); }
 
     pub fn set_cur_consensus_era_genesis_hash(
         &self, cur_era_hash: &H256, next_era_hash: &H256,
@@ -939,6 +925,25 @@ impl BlockDataManager {
     ) -> Vec<usize> {
         self.tx_data_manager.build_partial(compact_block)
     }
+
+    pub fn get_state_readonly_index<'a>(
+        &'a self, block_hash: &'a EpochId,
+    ) -> GuardedValue<
+        RwLockReadGuard<'a, HashMap<H256, EpochExecutionCommitment>>,
+        Option<StateIndex<'a>>,
+    > {
+        let (guard, maybe_commitment) =
+            self.get_epoch_execution_commitment(block_hash).into();
+        let maybe_state_index = match &*maybe_commitment {
+            None => None,
+            Some(execution_commitment) => Some(StateIndex::new_for_readonly(
+                block_hash,
+                &execution_commitment.state_root_with_aux_info,
+            )),
+        };
+
+        GuardedValue::new(guard, maybe_state_index)
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -949,17 +954,19 @@ pub enum DbType {
 
 pub struct DataManagerConfiguration {
     record_tx_address: bool,
-    tx_cache_count: usize,
+    tx_cache_index_maintain_timeout: Duration,
     db_type: DbType,
 }
 
 impl DataManagerConfiguration {
     pub fn new(
-        record_tx_address: bool, tx_cache_count: usize, db_type: DbType,
-    ) -> Self {
+        record_tx_address: bool, tx_cache_index_maintain_timeout: Duration,
+        db_type: DbType,
+    ) -> Self
+    {
         Self {
             record_tx_address,
-            tx_cache_count,
+            tx_cache_index_maintain_timeout,
             db_type,
         }
     }

@@ -2,11 +2,11 @@
 // Conflux is free software and distributed under GNU General Public License.
 // See http://www.gnu.org/licenses/
 
-use crate::rpc::types::{H256, U256};
+use crate::rpc::types::{Log, H256, U256};
 use cfx_types::{Address, Bloom};
 use cfxcore::{executive::contract_address, vm::CreateContractAddress};
 use primitives::{
-    receipt::Receipt as PrimitiveReceipt, transaction::Action, LogEntry,
+    receipt::Receipt as PrimitiveReceipt, transaction::Action,
     SignedTransaction as PrimitiveTransaction, TransactionAddress,
 };
 use serde_derive::Serialize;
@@ -32,7 +32,7 @@ pub struct Receipt {
     /// Address of contracts created during execution of transaction.
     pub contract_created: Option<Address>,
     /// Array of log objects, which this transaction generated.
-    pub logs: Vec<LogEntry>,
+    pub logs: Vec<Log>,
     /// Bloom filter for light clients to quickly retrieve related logs.
     pub logs_bloom: Bloom,
     /// state root.
@@ -59,28 +59,28 @@ impl Receipt {
         }
         Receipt {
             transaction_hash: transaction.hash.into(),
-            index: transaction_address.index.into(),
+            index: transaction_address.index,
             block_hash: transaction_address.block_hash.into(),
             gas_used: receipt.gas_used.into(),
-            from: transaction.sender.into(),
+            from: transaction.sender,
             to: match transaction.action {
                 Action::Create => None,
-                Action::Call(ref address) => Some(address.clone().into()),
+                Action::Call(ref address) => Some(address.clone()),
             },
-            outcome_status: receipt.outcome_status.into(),
-            contract_created: address.into(),
-            logs: receipt.logs,
-            logs_bloom: receipt.log_bloom.into(),
+            outcome_status: receipt.outcome_status,
+            contract_created: address,
+            logs: receipt.logs.into_iter().map(Log::from).collect(),
+            logs_bloom: receipt.log_bloom,
             state_root: Default::default(),
             epoch_number: None,
         }
     }
 
     pub fn set_state_root(&mut self, state_root: H256) {
-        self.state_root = state_root.into();
+        self.state_root = state_root;
     }
 
     pub fn set_epoch_number(&mut self, epoch_number: Option<u64>) {
-        self.epoch_number = epoch_number.into();
+        self.epoch_number = epoch_number;
     }
 }

@@ -15,7 +15,7 @@ use cfxcore::{
     SharedTransactionPool,
 };
 use lazy_static::lazy_static;
-use log::{debug, info, trace, warn};
+use log::{debug, trace, warn};
 use metrics::{Gauge, GaugeUsize};
 use parking_lot::{Mutex, RwLock};
 use primitives::*;
@@ -25,7 +25,7 @@ use std::{
     sync::{mpsc, Arc},
     thread, time,
 };
-use time::{SystemTime, UNIX_EPOCH};
+use time::{Duration, SystemTime, UNIX_EPOCH};
 use txgen::{SharedTransactionGenerator, SpecialTransactionGenerator};
 lazy_static! {
     static ref PACKED_ACCOUNT_SIZE: Arc<dyn Gauge<usize>> =
@@ -63,7 +63,7 @@ impl Worker {
         problem_receiver: mpsc::Receiver<ProofOfWorkProblem>,
     ) -> Self
     {
-        let bg_handle = bg.clone();
+        let bg_handle = bg;
 
         let thread = thread::Builder::new()
             .name("blockgen".into())
@@ -84,22 +84,14 @@ impl Worker {
                     }
                     // check if there is a problem to be solved
                     if problem.is_some() {
-                        let boundary = problem.unwrap().boundary;
-                        let block_hash = problem.unwrap().block_hash;
+                        let boundary = problem.as_ref().unwrap().boundary;
+                        let block_hash = problem.as_ref().unwrap().block_hash;
 
-                        #[cfg(test)]
-                        {
-                            let difficulty = problem.unwrap().difficulty;
-                            if difficulty > 500000.into() {
-                                warn!("Difficulty is too high to mine!");
-                            }
-                        }
-
-                        for _i in 0..100000 {
+                        for _i in 0..100_000 {
                             //TODO: adjust the number of times
                             let nonce = rand::random();
                             let hash = compute(nonce, &block_hash);
-                            if hash < boundary {
+                            if ProofOfWorkProblem::validate_hash_against_boundary(&hash, &boundary) {
                                 // problem solved
                                 match solution_sender
                                     .send(ProofOfWorkSolution { nonce })
@@ -178,7 +170,6 @@ impl BlockGenerator {
     // TODO: should not hold and pass write lock to consensus.
     fn assemble_new_block_impl(
         &self, parent_hash: H256, referee: Vec<H256>, blame: u32,
-        deferred_state_root_with_aux_info: StateRootWithAuxInfo,
         deferred_state_root: H256, deferred_receipts_root: H256,
         deferred_logs_bloom_hash: H256, block_gas_limit: U256,
         transactions: Vec<Arc<SignedTransaction>>, difficulty: u64,
@@ -214,6 +205,9 @@ impl BlockGenerator {
             .unwrap()
             .as_secs();
 
+        // Adjust the timestamp of the currently mined block to be later
+        // than or equal to its parent's.
+        // See comments in verify_header_graph_ready_block()
         let my_timestamp = max(parent_timestamp, now);
 
         let block_header = BlockHeaderBuilder::new()
@@ -225,9 +219,6 @@ impl BlockGenerator {
             .with_timestamp(my_timestamp)
             .with_author(self.mining_author)
             .with_blame(blame)
-            .with_deferred_state_root_with_aux_info(
-                deferred_state_root_with_aux_info,
-            )
             .with_deferred_state_root(deferred_state_root)
             .with_deferred_receipts_root(deferred_receipts_root)
             .with_deferred_logs_bloom_hash(deferred_logs_bloom_hash)
@@ -248,13 +239,7 @@ impl BlockGenerator {
         difficulty: u64, adaptive: bool,
     ) -> Result<Block, String>
     {
-        let (
-            blame,
-            state_root_with_aux,
-            state_root,
-            receipts_root,
-            logs_bloom_hash,
-        ) = self
+        let (blame, state_root, receipts_root, logs_bloom_hash) = self
             .graph
             .consensus
             .force_compute_blame_and_deferred_state_for_generation(
@@ -274,7 +259,6 @@ impl BlockGenerator {
             parent_hash,
             referee,
             blame,
-            state_root_with_aux,
             state_root,
             receipts_root,
             logs_bloom_hash,
@@ -313,7 +297,6 @@ impl BlockGenerator {
 
         let (
             blame,
-            state_root_with_aux,
             deferred_state_root,
             deferred_receipts_root,
             deferred_logs_bloom_hash,
@@ -333,7 +316,6 @@ impl BlockGenerator {
             best_block_hash,
             referee,
             blame,
-            state_root_with_aux,
             deferred_state_root,
             deferred_receipts_root,
             deferred_logs_bloom_hash,
@@ -367,7 +349,6 @@ impl BlockGenerator {
 
         let (
             mut blame,
-            state_root_with_aux,
             mut deferred_state_root,
             mut deferred_receipts_root,
             mut deferred_logs_bloom_hash,
@@ -400,7 +381,6 @@ impl BlockGenerator {
             best_block_hash,
             referee,
             blame,
-            state_root_with_aux,
             deferred_state_root,
             deferred_receipts_root,
             deferred_logs_bloom_hash,
@@ -456,7 +436,7 @@ impl BlockGenerator {
         self.generate_block(
             num_txs,
             block_size_limit,
-            txs.into_iter().map(|tx| Arc::new(tx)).collect(),
+            txs.into_iter().map(Arc::new).collect(),
         )
     }
 
@@ -512,7 +492,9 @@ impl BlockGenerator {
 
     pub fn generate_custom_block(
         &self, transactions: Vec<Arc<SignedTransaction>>,
-    ) -> H256 {
+        adaptive: Option<bool>,
+    ) -> H256
+    {
         let block_gas_limit = DEFAULT_MAX_BLOCK_GAS_LIMIT.into();
         // get the best block
         let (best_info, _) =
@@ -524,7 +506,6 @@ impl BlockGenerator {
             );
         let (
             blame,
-            state_root_with_aux,
             deferred_state_root,
             deferred_receipts_root,
             deferred_logs_bloom_hash,
@@ -544,14 +525,13 @@ impl BlockGenerator {
             best_block_hash,
             referee,
             blame,
-            state_root_with_aux,
             deferred_state_root,
             deferred_receipts_root,
             deferred_logs_bloom_hash,
             block_gas_limit,
             transactions,
             0,
-            None,
+            adaptive,
         );
 
         self.generate_block_impl(block)
@@ -562,13 +542,7 @@ impl BlockGenerator {
         transactions: Vec<Arc<SignedTransaction>>, adaptive: bool,
     ) -> Result<H256, String>
     {
-        let (
-            blame,
-            state_root_with_aux,
-            state_root,
-            receipts_root,
-            logs_bloom_hash,
-        ) = self
+        let (blame, state_root, receipts_root, logs_bloom_hash) = self
             .graph
             .consensus
             .force_compute_blame_and_deferred_state_for_generation(
@@ -579,7 +553,6 @@ impl BlockGenerator {
             parent_hash,
             referee,
             blame,
-            state_root_with_aux,
             state_root,
             receipts_root,
             logs_bloom_hash,
@@ -595,15 +568,10 @@ impl BlockGenerator {
     pub fn generate_block_with_nonce_and_timestamp(
         &self, parent_hash: H256, referee: Vec<H256>,
         transactions: Vec<Arc<SignedTransaction>>, nonce: u64, timestamp: u64,
+        adaptive: bool,
     ) -> Result<H256, String>
     {
-        let (
-            blame,
-            state_root_with_aux,
-            state_root,
-            receipts_root,
-            logs_bloom_hash,
-        ) = self
+        let (blame, state_root, receipts_root, logs_bloom_hash) = self
             .graph
             .consensus
             .force_compute_blame_and_deferred_state_for_generation(
@@ -614,20 +582,19 @@ impl BlockGenerator {
             parent_hash,
             referee,
             blame,
-            state_root_with_aux,
             state_root,
             receipts_root,
             logs_bloom_hash,
             DEFAULT_MAX_BLOCK_GAS_LIMIT.into(),
             transactions,
             0,
-            None,
+            Some(adaptive),
         );
         block.block_header.set_nonce(nonce);
         block.block_header.set_timestamp(timestamp);
 
         let hash = block.block_header.compute_hash();
-        info!(
+        debug!(
             "generate_block with block header:{:?} tx_number:{}, block_size:{}",
             block.block_header,
             block.transactions.len(),
@@ -642,11 +609,10 @@ impl BlockGenerator {
     fn generate_block_impl(&self, block_init: Block) -> H256 {
         let mut block = block_init;
         let difficulty = block.block_header.difficulty();
-        let problem = ProofOfWorkProblem {
-            block_hash: block.block_header.problem_hash(),
-            difficulty: *difficulty,
-            boundary: difficulty_to_boundary(difficulty),
-        };
+        let problem = ProofOfWorkProblem::new(
+            block.block_header.problem_hash(),
+            *difficulty,
+        );
         loop {
             let nonce = rand::random();
             if validate(&problem, &ProofOfWorkSolution { nonce }) {
@@ -655,7 +621,7 @@ impl BlockGenerator {
             }
         }
         let hash = block.block_header.compute_hash();
-        info!(
+        debug!(
             "generate_block with block header:{:?} tx_number:{}, block_size:{}",
             block.block_header,
             block.transactions.len(),
@@ -672,9 +638,7 @@ impl BlockGenerator {
         hash
     }
 
-    pub fn pow_config(&self) -> ProofOfWorkConfig {
-        return self.pow_config.clone();
-    }
+    pub fn pow_config(&self) -> ProofOfWorkConfig { self.pow_config.clone() }
 
     /// Start num_worker new workers
     pub fn start_new_worker(
@@ -750,15 +714,14 @@ impl BlockGenerator {
                     .unwrap()
                     .block_header
                     .difficulty();
-                let problem = ProofOfWorkProblem {
-                    block_hash: current_mining_block
+                let problem = ProofOfWorkProblem::new(
+                    current_mining_block
                         .as_ref()
                         .unwrap()
                         .block_header
                         .problem_hash(),
-                    difficulty: *current_difficulty,
-                    boundary: difficulty_to_boundary(current_difficulty),
-                };
+                    *current_difficulty,
+                );
                 BlockGenerator::send_problem(bg.clone(), problem);
                 current_problem = Some(problem);
             } else {
@@ -798,6 +761,20 @@ impl BlockGenerator {
                     continue;
                 }
             }
+        }
+    }
+
+    pub fn auto_block_generation(&self, interval_ms: u64) {
+        let interval = Duration::from_millis(interval_ms);
+        loop {
+            match *self.state.read() {
+                MiningState::Stop => return,
+                _ => {}
+            }
+            if !self.sync.catch_up_mode() {
+                self.generate_block(3000, MAX_BLOCK_SIZE_IN_BYTES, vec![]);
+            }
+            thread::sleep(interval);
         }
     }
 }

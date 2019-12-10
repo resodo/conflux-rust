@@ -89,7 +89,7 @@ pub struct FullClient {}
 impl FullClient {
     // Start all key components of Conflux and pass out their handles
     pub fn start(
-        conf: Configuration, exit: Arc<(Mutex<bool>, Condvar)>,
+        mut conf: Configuration, exit: Arc<(Mutex<bool>, Condvar)>,
     ) -> Result<FullClientHandle, String> {
         info!("Working directory: {:?}", std::env::current_dir());
 
@@ -136,7 +136,7 @@ impl FullClient {
             });
         }
 
-        let genesis_accounts = if conf.raw_conf.test_mode {
+        let genesis_accounts = if conf.is_test_or_dev_mode() {
             match conf.raw_conf.genesis_secrets {
                 Some(ref file) => {
                     genesis::default(secret_store.as_ref());
@@ -161,9 +161,9 @@ impl FullClient {
         );
         debug!("Initialize genesis_block={:?}", genesis_block);
 
-        CHECKPOINT_DUMP_MANAGER
-            .write()
-            .initialize(storage_manager.clone());
+        //        CHECKPOINT_DUMP_MANAGER
+        //            .write()
+        //            .initialize(storage_manager.clone());
 
         let data_man = Arc::new(BlockDataManager::new(
             cache_config,
@@ -187,10 +187,10 @@ impl FullClient {
         let pow_config = conf.pow_config();
         let consensus = Arc::new(ConsensusGraph::new(
             conf.consensus_config(),
-            vm.clone(),
+            vm,
             txpool.clone(),
-            statistics.clone(),
-            data_man.clone(),
+            statistics,
+            data_man,
             pow_config.clone(),
             verification_config,
         ));
@@ -218,6 +218,7 @@ impl FullClient {
             sync_graph.clone(),
             Arc::downgrade(&network),
             txpool.clone(),
+            conf.raw_conf.throttling_conf.clone(),
         ));
         light_provider.clone().register(network.clone()).unwrap();
 
@@ -232,7 +233,7 @@ impl FullClient {
         ));
         sync.register().unwrap();
 
-        if conf.raw_conf.test_mode && conf.raw_conf.data_propagate_enabled {
+        if conf.is_test_mode() && conf.raw_conf.data_propagate_enabled {
             let dp = Arc::new(DataPropagation::new(
                 conf.raw_conf.data_propagate_interval_ms,
                 conf.raw_conf.data_propagate_size,
@@ -258,11 +259,11 @@ impl FullClient {
 
         let maybe_author: Option<Address> = conf.raw_conf.mining_author.clone().map(|hex_str| Address::from_str(hex_str.as_str()).expect("mining-author should be 40-digit hex string without 0x prefix"));
         let blockgen = Arc::new(BlockGenerator::new(
-            sync_graph.clone(),
+            sync_graph,
             txpool.clone(),
             sync.clone(),
             txgen.clone(),
-            special_txgen.clone(),
+            special_txgen,
             pow_config.clone(),
             maybe_author.clone().unwrap_or_default(),
         ));
@@ -278,12 +279,24 @@ impl FullClient {
                     BlockGenerator::start_mining(bg, 0);
                 })
                 .expect("Mining thread spawn error");
+        } else {
+            if conf.is_dev_mode() {
+                let bg = blockgen.clone();
+                let interval_ms = conf.raw_conf.dev_block_interval_ms;
+                info!("Start auto block generation");
+                thread::Builder::new()
+                    .name("auto_mining".into())
+                    .spawn(move || {
+                        bg.auto_block_generation(interval_ms);
+                    })
+                    .expect("Mining thread spawn error");
+            }
         }
 
         let tx_conf = conf.tx_gen_config();
         let txgen_handle = if tx_conf.generate_tx {
             let txgen_clone = txgen.clone();
-            let t = if conf.raw_conf.test_mode {
+            let t = if conf.is_test_mode() {
                 match conf.raw_conf.genesis_secrets {
                     Some(ref _file) => {
                         thread::Builder::new()
@@ -292,8 +305,7 @@ impl FullClient {
                                 TransactionGenerator::generate_transactions_with_multiple_genesis_accounts(
                                     txgen_clone,
                                     tx_conf,
-                                )
-                                    .unwrap();
+                                );
                             })
                             .expect("should succeed")
                     }
@@ -339,7 +351,7 @@ impl FullClient {
         let common_impl = Arc::new(CommonImpl::new(
             exit,
             consensus.clone(),
-            network.clone(),
+            network,
             txpool.clone(),
         ));
 
@@ -353,25 +365,40 @@ impl FullClient {
                 conf.raw_conf.jsonrpc_cors.clone(),
                 conf.raw_conf.jsonrpc_http_keep_alive,
             ),
-            setup_debug_rpc_apis(common_impl.clone(), rpc_impl.clone(), None),
+            setup_debug_rpc_apis(
+                common_impl.clone(),
+                rpc_impl.clone(),
+                None,
+                &conf,
+            ),
         )?;
 
+        if conf.is_dev_mode() {
+            if conf.raw_conf.jsonrpc_tcp_port.is_none() {
+                conf.raw_conf.jsonrpc_tcp_port = Some(12536);
+            }
+            if conf.raw_conf.jsonrpc_http_port.is_none() {
+                conf.raw_conf.jsonrpc_http_port = Some(12537);
+            }
+        };
         let rpc_tcp_server = super::rpc::start_tcp(
             super::rpc::TcpConfiguration::new(
                 None,
                 conf.raw_conf.jsonrpc_tcp_port,
             ),
-            if conf.raw_conf.test_mode {
+            if conf.is_test_or_dev_mode() {
                 setup_debug_rpc_apis(
                     common_impl.clone(),
                     rpc_impl.clone(),
                     Some(pubsub),
+                    &conf,
                 )
             } else {
                 setup_public_rpc_apis(
                     common_impl.clone(),
                     rpc_impl.clone(),
                     Some(pubsub),
+                    &conf,
                 )
             },
             RpcExtractor,
@@ -384,18 +411,10 @@ impl FullClient {
                 conf.raw_conf.jsonrpc_cors.clone(),
                 conf.raw_conf.jsonrpc_http_keep_alive,
             ),
-            if conf.raw_conf.test_mode {
-                setup_debug_rpc_apis(
-                    common_impl.clone(),
-                    rpc_impl.clone(),
-                    None,
-                )
+            if conf.is_test_or_dev_mode() {
+                setup_debug_rpc_apis(common_impl, rpc_impl, None, &conf)
             } else {
-                setup_public_rpc_apis(
-                    common_impl.clone(),
-                    rpc_impl.clone(),
-                    None,
-                )
+                setup_public_rpc_apis(common_impl, rpc_impl, None, &conf)
             },
         )?;
 
@@ -440,6 +459,7 @@ impl FullClient {
         BlockGenerator::stop(&blockgen);
         drop(blockgen);
         drop(to_drop);
+        CHECKPOINT_DUMP_MANAGER.read().stop();
 
         // Make sure ledger_db is properly dropped, so rocksdb can be closed
         // cleanly
@@ -459,7 +479,7 @@ impl FullClient {
 
         let mut lock = exit.0.lock();
         if !*lock {
-            let _ = exit.1.wait(&mut lock);
+            exit.1.wait(&mut lock);
         }
 
         FullClient::close(keep_alive);

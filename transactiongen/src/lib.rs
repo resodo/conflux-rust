@@ -164,7 +164,7 @@ impl TransactionGenerator {
 
     pub fn generate_transactions_with_multiple_genesis_accounts(
         txgen: Arc<TransactionGenerator>, tx_config: TransactionGeneratorConfig,
-    ) -> Result<(), Error> {
+    ) {
         loop {
             let account_start = txgen.account_start_index.read();
             if account_start.is_some() {
@@ -183,7 +183,7 @@ impl TransactionGenerator {
         // Wait for initial tx
         loop {
             match *txgen.state.read() {
-                TransGenState::Stop => return Ok(()),
+                TransGenState::Stop => return,
                 _ => {}
             }
 
@@ -218,7 +218,7 @@ impl TransactionGenerator {
         let account_count = address_secret_pair.len();
         loop {
             match *txgen.state.read() {
-                TransGenState::Stop => return Ok(()),
+                TransGenState::Stop => return,
                 _ => {}
             }
 
@@ -238,8 +238,12 @@ impl TransactionGenerator {
             // Generate nonce for the transaction
             let sender_nonce = nonce_map.get_mut(&sender_address).unwrap();
 
-            let (nonce, balance) =
-                txgen.txpool.get_state_account_info(&sender_address);
+            // FIXME: It's better first define what kind of Result type
+            // FIXME: to use for this function, then change unwrap() to ?.
+            let (nonce, balance) = txgen
+                .txpool
+                .get_state_account_info(&sender_address)
+                .unwrap();
             if nonce.cmp(sender_nonce) != Ordering::Equal {
                 *sender_nonce = nonce.clone();
                 balance_map.insert(sender_address.clone(), balance.clone());
@@ -267,7 +271,7 @@ impl TransactionGenerator {
             tx_to_insert.push(signed_tx.transaction);
             let (txs, fail) =
                 txgen.txpool.insert_new_transactions(tx_to_insert);
-            if fail.len() == 0 {
+            if fail.is_empty() {
                 txgen.sync.append_received_transactions(txs);
                 //tx successfully inserted into
                 // tx pool, so we can update our state about
@@ -278,7 +282,7 @@ impl TransactionGenerator {
                     *sender_balance -= balance_to_transfer + 21000;
                     if *sender_balance < 42000.into() {
                         addresses.remove(sender_index);
-                        if addresses.len() == 0 {
+                        if addresses.is_empty() {
                             break;
                         }
                     }
@@ -306,7 +310,6 @@ impl TransactionGenerator {
                 debug!("Elapsed time larger than the time needed for sleep: time_elapsed={:?}", time_elapsed);
             }
         }
-        Ok(())
     }
 
     pub fn generate_transactions(
@@ -475,7 +478,7 @@ impl TransactionGenerator {
             tx_to_insert.push(signed_tx.transaction);
             let (txs, fail) =
                 txgen.txpool.insert_new_transactions(tx_to_insert);
-            if fail.len() == 0 {
+            if fail.is_empty() {
                 txgen.sync.append_received_transactions(txs);
                 // tx successfully inserted into tx pool, so we can update our
                 // state about nonce and balance
@@ -527,7 +530,7 @@ pub struct SpecialTransactionGenerator {
 // Allow use of hex() in H256, etc.
 #[allow(deprecated)]
 impl SpecialTransactionGenerator {
-    const MAX_TOTAL_ACCOUNTS: usize = 100000;
+    const MAX_TOTAL_ACCOUNTS: usize = 100_000;
 
     pub fn new(
         start_key_pair: KeyPair, contract_creator: &Address,
@@ -540,7 +543,7 @@ impl SpecialTransactionGenerator {
             Account::new_empty_with_balance(
                 &start_address,
                 &start_balance,
-                &0.into(),
+                &0.into(), /* nonce */
             ),
             start_erc20_balance,
         );
@@ -595,9 +598,9 @@ impl SpecialTransactionGenerator {
                 sender_nonce = sender_info.1.nonce;
             }
 
-            let gas = U256::from(100000u64);
+            let gas = U256::from(100_000u64);
             let gas_price = U256::from(1u64);
-            let transaction_fee = U256::from(100000u64);
+            let transaction_fee = U256::from(100_000u64);
 
             if sender_balance <= transaction_fee {
                 self.accounts.remove(&sender_address);
@@ -631,8 +634,8 @@ impl SpecialTransactionGenerator {
                                 kp,
                                 Account::new_empty_with_balance(
                                     &address,
-                                    &0.into(),
-                                    &0.into(),
+                                    &0.into(), /* balance */
+                                    &0.into(), /* nonce */
                                 ),
                                 0.into(),
                             ),
@@ -689,9 +692,9 @@ impl SpecialTransactionGenerator {
                 sender_nonce = sender_info.1.nonce;
             }
 
-            let gas = U256::from(100000u64);
+            let gas = U256::from(100_000u64);
             let gas_price = U256::from(1u64);
-            let transaction_fee = U256::from(100000u64);
+            let transaction_fee = U256::from(100_000u64);
 
             if sender_balance <= transaction_fee {
                 self.accounts.remove(&sender_address);

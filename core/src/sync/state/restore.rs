@@ -6,7 +6,7 @@ use crate::{
     storage::{
         state::StateTrait,
         state_manager::{StateManager, StateManagerTrait},
-        SnapshotAndEpochIdRef,
+        StateIndex,
     },
     sync::state::delta::{Chunk, ChunkKey, ChunkReader, StateDumper},
 };
@@ -114,7 +114,8 @@ impl Restorer {
                         .expect("failed to decode chunk for restoration");
 
                     let epoch_id =
-                        SnapshotAndEpochIdRef::new(&checkpoint, None);
+                    // TODO: think about snapshot.
+                        StateIndex::new_for_test_only_delta_mpt(&checkpoint);
                     let mut state = state_manager
                         .get_state_for_next_epoch(epoch_id)
                         .expect("failed to get checkpoint state")
@@ -142,7 +143,9 @@ impl Restorer {
     pub fn restored_state_root(
         &self, state_manager: Arc<StateManager>,
     ) -> StateRoot {
-        let epoch_id = SnapshotAndEpochIdRef::new(&self.checkpoint, None);
+        // TODO: think about snapshot.
+        let epoch_id =
+            StateIndex::new_for_test_only_delta_mpt(&self.checkpoint);
         let state = state_manager
             .get_state_no_commit(epoch_id)
             .expect("failed to get checkpoint state")

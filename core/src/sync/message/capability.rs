@@ -2,10 +2,12 @@
 // Conflux is free software and distributed under GNU General Public License.
 // See http://www.gnu.org/licenses/
 
-use crate::sync::{
-    message::{Context, Handleable},
-    msg_sender::send_message,
-    Error, SynchronizationState,
+use crate::{
+    message::Message,
+    sync::{
+        message::{Context, Handleable},
+        Error, SynchronizationState,
+    },
 };
 use cfx_types::H256;
 use network::{NetworkContext, PeerId};
@@ -14,9 +16,13 @@ use rlp_derive::{RlpDecodableWrapper, RlpEncodableWrapper};
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum DynamicCapability {
-    TxRelay(bool),                 // provide tx relay
-    ServeHeaders(bool),            // provide block header downloads
-    ServeCheckpoint(Option<H256>), // provide checkpoint downloads
+    TxRelay(bool),      // provide tx relay
+    ServeHeaders(bool), // provide block header downloads
+    ServeCheckpoint(Option<H256>), /* provide checkpoint downloads
+                         * FIXME: after a certain period, the checkpoint
+                         * FIXME: and/or snapshot will become
+                         * FIXME: unavailable. How is this situation
+                         * FIXME: handled? */
 }
 
 impl DynamicCapability {
@@ -34,7 +40,7 @@ impl DynamicCapability {
         let msg = DynamicCapabilityChange { changed: self };
 
         for peer in peers {
-            if let Err(e) = send_message(io, peer, &msg) {
+            if let Err(e) = msg.send(io, peer) {
                 debug!("Failed to send capability change message, peer = {}, message = {:?}, err = {:?}", peer, msg, e);
             }
         }

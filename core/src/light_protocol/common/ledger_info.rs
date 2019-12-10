@@ -7,6 +7,7 @@ use std::sync::Arc;
 use cfx_types::{Bloom, H256};
 use primitives::{
     Block, BlockHeader, BlockHeaderBuilder, EpochNumber, Receipt, StateRoot,
+    StorageKey,
 };
 
 use crate::{
@@ -17,7 +18,7 @@ use crate::{
     storage::{
         state::{State, StateTrait},
         state_manager::StateManagerTrait,
-        SnapshotAndEpochIdRef, StateProof,
+        StateProof,
     },
 };
 
@@ -100,7 +101,7 @@ impl LedgerInfo {
 
         self.consensus
             .data_man
-            .get_epoch_execution_commitments(&pivot)
+            .get_epoch_execution_commitment(&pivot)
             .map(|c| c.receipts_root)
             .ok_or(ErrorKind::InternalError.into())
     }
@@ -116,7 +117,7 @@ impl LedgerInfo {
 
         self.consensus
             .data_man
-            .get_epoch_execution_commitments(&pivot)
+            .get_epoch_execution_commitment(&pivot)
             .map(|c| c.logs_bloom_hash)
             .ok_or(ErrorKind::InternalError.into())
     }
@@ -126,14 +127,20 @@ impl LedgerInfo {
     pub fn state_of(&self, epoch: u64) -> Result<State, Error> {
         let pivot = self.pivot_hash_of(epoch)?;
 
-        let state = self
+        let (_state_index_guard, maybe_state_index) = self
             .consensus
             .data_man
-            .storage_manager
-            .get_state_no_commit(SnapshotAndEpochIdRef::new(&pivot, None));
+            .get_state_readonly_index(&pivot)
+            .into();
+        let state = maybe_state_index.map(|state_index| {
+            self.consensus
+                .data_man
+                .storage_manager
+                .get_state_no_commit(state_index)
+        });
 
         match state {
-            Ok(Some(state)) => Ok(state),
+            Some(Ok(Some(state))) => Ok(state),
             _ => Err(ErrorKind::InternalError.into()),
         }
     }
@@ -155,7 +162,7 @@ impl LedgerInfo {
         let state = self.state_of(epoch)?;
 
         let (value, proof) = StateDb::new(state)
-            .get_raw_with_proof(key)
+            .get_raw_with_proof(StorageKey::from_key_bytes(&key))
             .or(Err(ErrorKind::InternalError))?;
 
         let value = value.map(|x| x.to_vec());

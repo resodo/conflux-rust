@@ -4,7 +4,6 @@
 
 use super::protocol::*;
 use crate::message::{Message, MsgId};
-use std::any::Any;
 
 // generate `pub mod msgid`
 // TODO(thegaram): reorder message ids
@@ -34,6 +33,7 @@ build_msgid! {
     GET_TX_INFOS = 0x016
     TX_INFOS = 0x017
 
+    THROTTLED = 0xfe
     INVALID = 0xff
 }
 

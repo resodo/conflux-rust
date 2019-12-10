@@ -222,6 +222,9 @@ class TestNode:
             except ValueError as e:  # cookie file not found and no rpcuser or rpcassword. bitcoind still starting
                 if "No RPC credentials" not in str(e):
                     raise
+            except jsonrpcclient.exceptions.ReceivedNon2xxResponseError as e:
+                if e.code != 500:
+                    raise
             time.sleep(1.0 / poll_per_s)
         self._raise_assertion_error(
             "failed to get RPC proxy: index = {}, ip = {}, rpchost = {}, p2pport={}, rpcport = {}, rpc_url = {}".format(
@@ -258,7 +261,7 @@ class TestNode:
         self.addr = sha3(encode_int32(x) + encode_int32(y))[12:]
         self.log.debug("Get node {} nodeid {}".format(self.index, self.key))
 
-    def stop_node(self, expected_stderr="", kill=False):
+    def stop_node(self, expected_stderr="", kill=False, wait=True):
         """Stop the node."""
         if not self.running:
             return
@@ -271,6 +274,8 @@ class TestNode:
         except http.client.CannotSendRequest:
             self.log.exception("Unable to stop node.")
 
+        if wait:
+            self.wait_until_stopped()
         # Check that stderr is as expected
         self.stderr.seek(0)
         stderr = self.stderr.read().decode("utf-8").strip()

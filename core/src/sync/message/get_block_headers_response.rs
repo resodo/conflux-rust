@@ -3,7 +3,7 @@
 // See http://www.gnu.org/licenses/
 
 use crate::{
-    message::RequestId,
+    message::{Message, RequestId},
     parameters::{
         block::ACCEPTABLE_TIME_DRIFT, sync::LOCAL_BLOCK_INFO_QUERY_THRESHOLD,
     },
@@ -13,6 +13,7 @@ use crate::{
             Handleable,
         },
         msg_sender::NULL,
+        synchronization_state::PeerFilter,
         Error,
     },
 };
@@ -51,6 +52,13 @@ impl Handleable for GetBlockHeadersResponse {
             return Ok(());
         }
 
+        // We may receive some messages from peer during recover from db
+        // phase. We should ignore it, since it may cause some
+        // inconsistency.
+        if ctx.manager.in_recover_from_db_phase() {
+            return Ok(());
+        }
+
         let req = ctx.match_request(self.request_id)?;
         let req = req.downcast_ref::<GetBlockHeaders>(
             ctx.io,
@@ -83,9 +91,9 @@ impl Handleable for GetBlockHeadersResponse {
         let chosen_peer = if timestamp_validation_result.is_ok() {
             Some(ctx.peer)
         } else {
-            let mut exclude = HashSet::new();
-            exclude.insert(ctx.peer);
-            ctx.manager.syn.get_random_peer(&exclude)
+            PeerFilter::new(self.msg_id())
+                .exclude(ctx.peer)
+                .select(&ctx.manager.syn)
         };
 
         // re-request headers requested but not received
@@ -124,7 +132,9 @@ impl GetBlockHeadersResponse {
                 // process it and request its dependence once.
                 continue;
             }
-            // check timestamp drift
+
+            // Check timestamp drift
+            // See comments in verify_header_graph_ready_block()
             if ctx.manager.graph.verification_config.verify_timestamp {
                 if header.timestamp() > now_timestamp + ACCEPTABLE_TIME_DRIFT {
                     ctx.manager.future_blocks.insert(header.clone());

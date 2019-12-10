@@ -402,7 +402,7 @@ impl TransactionWithSignature {
     /// Checks whether the signature has a low 's' value.
     pub fn check_low_s(&self) -> Result<(), keylib::Error> {
         if !self.signature().is_low_s() {
-            Err(keylib::Error::InvalidSignature.into())
+            Err(keylib::Error::InvalidSignature)
         } else {
             Ok(())
         }

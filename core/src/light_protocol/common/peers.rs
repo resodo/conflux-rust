@@ -4,14 +4,15 @@
 
 use cfx_types::H256;
 use parking_lot::RwLock;
-use rand::Rng;
 
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
 
-use crate::network::PeerId;
+use crate::{message::MsgId, network::PeerId};
+use rand::prelude::SliceRandom;
+use throttling::token_bucket::{ThrottledManager, TokenBucketManager};
 
 #[derive(Default)]
 pub struct FullPeerState {
@@ -19,12 +20,15 @@ pub struct FullPeerState {
     pub handshake_completed: bool,
     pub protocol_version: u8,
     pub terminals: HashSet<H256>,
+    pub throttled_msgs: ThrottledManager<MsgId>,
+    pub unexpected_msgs: TokenBucketManager,
 }
 
 #[derive(Default)]
 pub struct LightPeerState {
     pub handshake_completed: bool,
     pub protocol_version: u8,
+    pub throttling: TokenBucketManager,
 }
 
 #[derive(Default)]
@@ -54,13 +58,13 @@ where T: Default
 
     pub fn remove(&self, peer: &PeerId) { self.0.write().remove(&peer); }
 
-    pub fn all_peers_satisfying<F>(&self, predicate: F) -> Vec<PeerId>
-    where F: Fn(&T) -> bool {
+    pub fn all_peers_satisfying<F>(&self, mut predicate: F) -> Vec<PeerId>
+    where F: FnMut(&mut T) -> bool {
         self.0
             .read()
             .iter()
             .filter_map(|(id, state)| {
-                if predicate(&*state.read()) {
+                if predicate(&mut *state.write()) {
                     Some(*id)
                 } else {
                     None
@@ -69,25 +73,44 @@ where T: Default
             .collect()
     }
 
-    pub fn random_peer_satisfying<F>(&self, predicate: F) -> Option<PeerId>
-    where F: Fn(&T) -> bool {
-        let options = self.all_peers_satisfying(predicate);
-        rand::thread_rng().choose(&options).cloned()
-    }
-
-    pub fn all_peers_shuffled(&self) -> Vec<PeerId> {
-        let mut peers: Vec<_> = self.0.read().keys().cloned().collect();
-        rand::thread_rng().shuffle(&mut peers);
-        peers
-    }
-
-    pub fn random_peer(&self) -> Option<PeerId> {
-        let peers: Vec<_> = self.0.read().keys().cloned().collect();
-        rand::thread_rng().choose(&peers).cloned()
-    }
-
     pub fn fold<B, F>(&self, init: B, f: F) -> B
     where F: FnMut(B, &Arc<RwLock<T>>) -> B {
         self.0.write().values().fold(init, f)
+    }
+}
+
+pub struct FullPeerFilter {
+    msg_id: MsgId,
+    min_best_epoch: Option<u64>,
+}
+
+impl FullPeerFilter {
+    pub fn new(msg_id: MsgId) -> Self {
+        FullPeerFilter {
+            msg_id,
+            min_best_epoch: None,
+        }
+    }
+
+    pub fn with_min_best_epoch(mut self, min_best_epoch: u64) -> Self {
+        self.min_best_epoch.replace(min_best_epoch);
+        self
+    }
+
+    pub fn select(self, peers: Arc<Peers<FullPeerState>>) -> Option<PeerId> {
+        self.select_all(peers)
+            .choose(&mut rand::thread_rng())
+            .cloned()
+    }
+
+    pub fn select_all(self, peers: Arc<Peers<FullPeerState>>) -> Vec<PeerId> {
+        peers.all_peers_satisfying(|peer| {
+            if peer.throttled_msgs.check_throttled(&self.msg_id) {
+                return false;
+            }
+
+            let min_best_epoch = self.min_best_epoch.unwrap_or_default();
+            peer.best_epoch >= min_best_epoch
+        })
     }
 }

@@ -3,16 +3,15 @@
 // See http://www.gnu.org/licenses/
 
 use super::{
-    msg_sender::{send_message, NULL},
-    random,
-    request_manager::RequestManager,
-    Error, ErrorKind, SharedSynchronizationGraph, SynchronizationState,
+    msg_sender::NULL, random, request_manager::RequestManager, Error,
+    ErrorKind, SharedSynchronizationGraph, SynchronizationState,
 };
 use crate::{
     block_data_manager::BlockStatus,
     light_protocol::Provider as LightProvider,
-    message::{decode_msg, HasRequestId, Message, MsgId},
+    message::{decode_msg, Message, MsgId},
     parameters::sync::*,
+    rand::Rng,
     sync::{
         message::{
             handle_rlp_message, msgid, Context, DynamicCapability,
@@ -21,18 +20,19 @@ use crate::{
         },
         state::{delta::CHECKPOINT_DUMP_MANAGER, SnapshotChunkSync},
         synchronization_phases::{SyncPhaseType, SynchronizationPhaseManager},
+        synchronization_state::PeerFilter,
     },
 };
 use cfx_types::H256;
 use io::TimerToken;
-use metrics::{register_meter_with_group, Meter};
+use metrics::{register_meter_with_group, Meter, MeterTimer};
 use network::{
     throttling::THROTTLING_SERVICE, Error as NetworkError, HandlerWorkType,
     NetworkContext, NetworkProtocolHandler, PeerId, UpdateNodeOperation,
 };
 use parking_lot::{Mutex, RwLock};
 use primitives::{Block, BlockHeader, SignedTransaction};
-use rand::Rng;
+use rand::prelude::SliceRandom;
 use rlp::Rlp;
 use std::{
     cmp,
@@ -44,8 +44,15 @@ use std::{
 lazy_static! {
     static ref TX_PROPAGATE_METER: Arc<dyn Meter> =
         register_meter_with_group("system_metrics", "tx_propagate_set_size");
+    static ref TX_HASHES_PROPAGATE_METER: Arc<dyn Meter> =
+        register_meter_with_group(
+            "system_metrics",
+            "tx_hashes_propagate_set_size"
+        );
     static ref BLOCK_RECOVER_TIMER: Arc<dyn Meter> =
         register_meter_with_group("timer", "sync:recover_block");
+    static ref PROPAGATE_TX_TIMER: Arc<dyn Meter> =
+        register_meter_with_group("timer", "sync:propagate_tx_timer");
 }
 
 const TX_TIMER: TimerToken = 0;
@@ -245,6 +252,7 @@ pub struct ProtocolConfiguration {
     pub tx_maintained_for_peer_timeout: Duration,
     pub max_inflight_request_count: u64,
     pub received_tx_index_maintain_timeout: Duration,
+    pub inflight_pending_tx_index_maintain_timeout: Duration,
     pub request_block_with_public: bool,
     pub max_trans_count_received_in_catch_up: u64,
     pub min_peers_propagation: usize,
@@ -252,6 +260,8 @@ pub struct ProtocolConfiguration {
     pub future_block_buffer_capacity: usize,
     pub max_download_state_peers: usize,
     pub test_mode: bool,
+    pub dev_mode: bool,
+    pub throttling_config_file: Option<String>,
 }
 
 impl SynchronizationProtocolHandler {
@@ -262,7 +272,10 @@ impl SynchronizationProtocolHandler {
         light_provider: Arc<LightProvider>,
     ) -> Self
     {
-        let sync_state = Arc::new(SynchronizationState::new(is_full_node));
+        let sync_state = Arc::new(SynchronizationState::new(
+            is_full_node,
+            protocol_config.dev_mode,
+        ));
         let request_manager =
             Arc::new(RequestManager::new(&protocol_config, sync_state.clone()));
 
@@ -315,6 +328,14 @@ impl SynchronizationProtocolHandler {
             != SyncPhaseType::Normal
     }
 
+    pub fn in_recover_from_db_phase(&self) -> bool {
+        let current_phase = self.phase_manager.get_current_phase();
+        current_phase.phase_type()
+            == SyncPhaseType::CatchUpRecoverBlockHeaderFromDB
+            || current_phase.phase_type()
+                == SyncPhaseType::CatchUpRecoverBlockFromDB
+    }
+
     pub fn need_requesting_blocks(&self) -> bool {
         let current_phase = self.phase_manager.get_current_phase();
         current_phase.phase_type() == SyncPhaseType::CatchUpSyncBlock
@@ -364,10 +385,12 @@ impl SynchronizationProtocolHandler {
 
         if !handle_rlp_message(msg_id, &ctx, &rlp)? {
             warn!("Unknown message: peer={:?} msgid={:?}", peer, msg_id);
+            let reason =
+                format!("unknown sync protocol message id {:?}", msg_id);
             io.disconnect_peer(
                 peer,
                 Some(UpdateNodeOperation::Remove),
-                None, /* reason */
+                reason.as_str(),
             );
         }
 
@@ -384,6 +407,7 @@ impl SynchronizationProtocolHandler {
         );
 
         let mut disconnect = true;
+        let reason = format!("{}", e.0);
         let mut op = None;
 
         // NOTE, DO NOT USE WILDCARD IN THE FOLLOWING MATCH STATEMENT!
@@ -407,6 +431,17 @@ impl SynchronizationProtocolHandler {
             }
             ErrorKind::InvalidSnapshotChunk(_) => {
                 op = Some(UpdateNodeOperation::Demotion)
+            }
+            ErrorKind::AlreadyThrottled(_) => {
+                op = Some(UpdateNodeOperation::Remove)
+            }
+            ErrorKind::Throttled(_, msg) => {
+                disconnect = false;
+
+                if let Err(e) = msg.send(io, peer) {
+                    error!("failed to send throttled packet: {:?}", e);
+                    disconnect = true;
+                }
             }
             ErrorKind::Decoder(_) => op = Some(UpdateNodeOperation::Remove),
             ErrorKind::Io(_) => disconnect = false,
@@ -445,7 +480,7 @@ impl SynchronizationProtocolHandler {
         }
 
         if disconnect {
-            io.disconnect_peer(peer, op, None /* reason */);
+            io.disconnect_peer(peer, op, reason.as_str());
         }
     }
 
@@ -485,7 +520,8 @@ impl SynchronizationProtocolHandler {
             to_request = missing_hashes.iter().cloned().collect::<Vec<H256>>();
             missing_hashes.clear();
         }
-        let chosen_peer = self.syn.get_random_peer(&HashSet::new());
+        let chosen_peer =
+            PeerFilter::new(msgid::GET_BLOCK_HEADERS).select(&self.syn);
         self.request_block_headers(
             io,
             chosen_peer,
@@ -572,9 +608,9 @@ impl SynchronizationProtocolHandler {
 
             // Epoch hashes are not in db, so should be requested from another
             // peer
-            let peer = self
-                .syn
-                .get_random_peer_satisfying(|peer| peer.best_epoch >= from);
+            let peer = PeerFilter::new(msgid::GET_BLOCK_HASHES_BY_EPOCH)
+                .with_min_best_epoch(from)
+                .select(&self.syn);
 
             // no peer has the epoch we need; try later
             if peer.is_none() {
@@ -744,9 +780,10 @@ impl SynchronizationProtocolHandler {
             }
         }
 
-        let mut failed_peers = HashSet::new();
-        failed_peers.insert(task.failed_peer);
-        let chosen_peer = self.syn.get_random_peer(&failed_peers);
+        let chosen_peer = PeerFilter::new(msgid::GET_BLOCKS)
+            .exclude(task.failed_peer)
+            .select(&self.syn);
+
         self.blocks_received(
             io,
             task.requested,
@@ -814,12 +851,12 @@ impl SynchronizationProtocolHandler {
 
         if num_total > num_allowed {
             debug!("apply throttling for broadcast_message, total: {}, allowed: {}", num_total, num_allowed);
-            random::new().shuffle(&mut peer_ids);
+            peer_ids.shuffle(&mut random::new());
             peer_ids.truncate(num_allowed);
         }
 
         for id in peer_ids {
-            send_message(io, id, msg)?;
+            msg.send(io, id)?;
         }
 
         Ok(())
@@ -837,7 +874,7 @@ impl SynchronizationProtocolHandler {
 
         Status {
             protocol_version: SYNCHRONIZATION_PROTOCOL_VERSION,
-            genesis_hash: self.graph.data_man.true_genesis_block.hash(),
+            genesis_hash: self.graph.data_man.true_genesis.hash(),
             best_epoch: best_info.best_epoch_number,
             terminal_block_hashes: terminal_hashes,
         }
@@ -848,7 +885,7 @@ impl SynchronizationProtocolHandler {
     ) -> Result<(), NetworkError> {
         let status_message = self.produce_status_message();
         debug!("Sending status message to {:?}: {:?}", peer, status_message);
-        send_message(io, peer, &status_message)
+        status_message.send(io, peer)
     }
 
     fn broadcast_status(&self, io: &dyn NetworkContext) {
@@ -897,16 +934,19 @@ impl SynchronizationProtocolHandler {
         // min(sqrt(x)/x, throttle_ratio)
         let chosen_size = (num_peers.powf(-0.5).min(throttle_ratio) * num_peers)
             .round() as usize;
-        let mut peer_vec = self.syn.get_random_peers(
-            chosen_size.max(self.protocol_config.min_peers_propagation),
-        );
-        peer_vec.truncate(self.protocol_config.max_peers_propagation);
-        peer_vec
+
+        let num_peers = chosen_size
+            .max(self.protocol_config.min_peers_propagation)
+            .min(self.protocol_config.max_peers_propagation);
+
+        PeerFilter::new(msgid::TRANSACTION_DIGESTS)
+            .select_n(num_peers, &self.syn)
     }
 
     fn propagate_transactions_to_peers(
         &self, io: &dyn NetworkContext, peers: Vec<PeerId>,
     ) {
+        let _timer = MeterTimer::time_func(PROPAGATE_TX_TIMER.as_ref());
         let lucky_peers = {
             peers
                 .into_iter()
@@ -933,51 +973,84 @@ impl SynchronizationProtocolHandler {
         }
 
         // 29 since the remaining bytes is 29.
-        let mut ordered_positions: Vec<usize> =
-            (0..lucky_peers.len()).map(|val| val % 29).collect();
+        let mut nonces: Vec<(u64, u64)> = (0..lucky_peers.len())
+            .map(|_| (rand::thread_rng().gen(), rand::thread_rng().gen()))
+            .collect();
 
-        let mut messages: Vec<Vec<u8>> = vec![vec![]; lucky_peers.len()];
-
-        let sent_transactions = {
+        let mut short_ids_part: Vec<Vec<u8>> = vec![vec![]; lucky_peers.len()];
+        let mut tx_hashes_part: Vec<H256> = vec![];
+        let (short_ids_transactions, tx_hashes_transactions) = {
             let mut transactions = self.get_to_propagate_trans();
             if transactions.is_empty() {
                 return;
             }
 
             let mut total_tx_bytes = 0;
-            let mut sent_transactions = Vec::new();
+            let mut short_ids_transactions: Vec<Arc<SignedTransaction>> =
+                Vec::new();
+            let mut tx_hashes_transactions: Vec<Arc<SignedTransaction>> =
+                Vec::new();
 
-            for (h, tx) in transactions.iter() {
+            let received_pool =
+                self.request_manager.received_transactions.read();
+            for (_, tx) in transactions.iter() {
                 total_tx_bytes += tx.rlp_size();
                 if total_tx_bytes >= MAX_TXS_BYTES_TO_PROPAGATE {
                     break;
                 }
-                sent_transactions.push(tx.clone());
-
-                for i in 0..lucky_peers.len() {
-                    //consist of [one random position byte, and last three
-                    // bytes]
-                    TransactionDigests::append_to_message(
-                        &mut messages[i],
-                        ordered_positions[i],
-                        h,
-                    );
+                if received_pool.group_overflow_from_tx_hash(&tx.hash()) {
+                    tx_hashes_transactions.push(tx.clone());
+                } else {
+                    short_ids_transactions.push(tx.clone());
                 }
             }
 
-            if sent_transactions.len() != transactions.len() {
-                for tx in sent_transactions.iter() {
+            if short_ids_transactions.len() + tx_hashes_transactions.len()
+                != transactions.len()
+            {
+                for tx in short_ids_transactions.iter() {
+                    transactions.remove(&tx.hash);
+                }
+                for tx in tx_hashes_transactions.iter() {
                     transactions.remove(&tx.hash);
                 }
                 self.set_to_propagate_trans(transactions);
             }
 
-            sent_transactions
+            (short_ids_transactions, tx_hashes_transactions)
         };
+        debug!(
+            "Send short ids:{}, Send tx hashes:{}",
+            short_ids_transactions.len(),
+            tx_hashes_transactions.len()
+        );
+        for tx in &short_ids_transactions {
+            for i in 0..lucky_peers.len() {
+                //consist of [one random position byte, and last three
+                // bytes]
+                TransactionDigests::append_short_id(
+                    &mut short_ids_part[i],
+                    nonces[i].0,
+                    nonces[i].1,
+                    &tx.hash(),
+                );
+            }
+        }
+        let mut sent_transactions = short_ids_transactions;
+        if !tx_hashes_transactions.is_empty() {
+            TX_HASHES_PROPAGATE_METER.mark(tx_hashes_transactions.len());
+            for tx in &tx_hashes_transactions {
+                TransactionDigests::append_tx_hash(
+                    &mut tx_hashes_part,
+                    tx.hash(),
+                );
+            }
+            sent_transactions.extend(tx_hashes_transactions);
+        }
 
         TX_PROPAGATE_METER.mark(sent_transactions.len());
 
-        if sent_transactions.is_empty() {
+        if sent_transactions.len() == 0 {
             return;
         }
 
@@ -993,12 +1066,15 @@ impl SynchronizationProtocolHandler {
 
         for i in 0..lucky_peers.len() {
             let peer_id = lucky_peers[i];
+            let (key1, key2) = nonces.pop().unwrap();
             let tx_msg = TransactionDigests::new(
                 window_index,
-                ordered_positions.pop().unwrap() as u8,
-                messages.pop().unwrap(),
+                key1,
+                key2,
+                short_ids_part.pop().unwrap(),
+                tx_hashes_part.clone(),
             );
-            match send_message(io, peer_id, &tx_msg) {
+            match tx_msg.send(io, peer_id) {
                 Ok(_) => {
                     trace!(
                         "{:02} <- Transactions ({} entries)",
@@ -1049,7 +1125,9 @@ impl SynchronizationProtocolHandler {
             }
         }
 
-        let chosen_peer = self.syn.get_random_peer(&HashSet::new());
+        let chosen_peer = PeerFilter::new(msgid::GET_CMPCT_BLOCKS)
+            .throttle(msgid::GET_BLOCKS)
+            .select(&self.syn);
 
         // request missing blocks
         self.request_missing_blocks(
@@ -1267,9 +1345,10 @@ impl SynchronizationProtocolHandler {
     pub fn expire_block_gc(
         &self, io: &dyn NetworkContext, timeout: u64,
     ) -> Result<(), Error> {
-        let need_to_relay = self
-            .graph
-            .resolve_outside_dependencies(false /* recover_from_db */);
+        let need_to_relay = self.graph.resolve_outside_dependencies(
+            false, /* recover_from_db */
+            self.insert_header_to_consensus(),
+        );
         self.graph.remove_expire_blocks(timeout);
         self.relay_blocks(io, need_to_relay)
     }
@@ -1378,7 +1457,7 @@ impl NetworkProtocolHandler for SynchronizationProtocolHandler {
             io.disconnect_peer(
                 peer,
                 Some(UpdateNodeOperation::Failure),
-                None, /* reason */
+                "send status failed", /* reason */
             );
         } else {
             self.syn
@@ -1432,7 +1511,7 @@ impl NetworkProtocolHandler for SynchronizationProtocolHandler {
                     io.disconnect_peer(
                         peer,
                         Some(UpdateNodeOperation::Failure),
-                        None, /* reason */
+                        "sync heartbeat timeout", /* reason */
                     );
                 }
             }

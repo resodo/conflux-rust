@@ -22,7 +22,7 @@ use crate::{
     worker::{SocketWorker, Work, WorkType, Worker},
     IoError, IoHandler,
 };
-use crossbeam::sync::chase_lev;
+use crossbeam_deque;
 use lazy_static::lazy_static;
 use metrics::{register_meter_with_group, Meter, MeterTimer};
 use mio::{
@@ -35,7 +35,6 @@ use slab::Slab;
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
         mpsc::{self, Sender as AsyncSender},
         Arc, Condvar as SCondvar, Mutex as SMutex, Weak,
     },
@@ -261,7 +260,7 @@ where Message: Send + Sync
     timers: Arc<RwLock<HashMap<HandlerId, UserTimer>>>,
     handlers: Arc<RwLock<Slab<Arc<dyn IoHandler<Message>>>>>,
     workers: Vec<Worker>,
-    worker_channel: chase_lev::Worker<Work<Message>>,
+    worker_channel: crossbeam_deque::Worker<Work<Message>>,
     work_ready: Arc<SCondvar>,
     socket_workers: Vec<(AsyncSender<Work<Message>>, SocketWorker)>,
     network_poll: Arc<Poll>,
@@ -277,7 +276,8 @@ where Message: Send + Sync + 'static
         network_poll: Arc<Poll>,
     ) -> Result<(), IoError>
     {
-        let (worker, stealer) = chase_lev::deque();
+        let worker = crossbeam_deque::Worker::new_fifo();
+        let stealer = worker.stealer();
         let num_workers = 4;
         let work_ready_mutex = Arc::new(SMutex::new(()));
         let work_ready = Arc::new(SCondvar::new());
@@ -624,7 +624,7 @@ where Message: Send + Sync + 'static
     host_channel: Mutex<Sender<IoMessage<Message>>>,
     handlers: Arc<RwLock<Slab<Arc<dyn IoHandler<Message>>>>>,
     network_poll_thread: Mutex<Option<JoinHandle<()>>>,
-    network_poll_stopped: Arc<AtomicBool>,
+    network_poll_stopped: Arc<(Registration, SetReadiness)>,
 }
 
 impl<Message> IoService<Message>
@@ -634,6 +634,7 @@ where Message: Send + Sync + 'static
     pub fn start(
         network_poll: Arc<Poll>,
     ) -> Result<IoService<Message>, IoError> {
+        debug!("start IoService");
         let mut config = EventLoopBuilder::new();
         config.messages_per_tick(1024);
         let mut event_loop = config.build().expect("Error creating event loop");
@@ -653,15 +654,18 @@ where Message: Send + Sync + 'static
             host_channel: Mutex::new(channel),
             handlers,
             network_poll_thread: Mutex::new(None),
-            network_poll_stopped: Arc::new(AtomicBool::new(false)),
+            network_poll_stopped: Arc::new(Registration::new2()),
         })
     }
 
     pub fn stop(&self) {
-        trace!("[IoService] Closing...");
+        debug!("[IoService] Closing...");
         // Network poll should be closed before the main EventLoop, otherwise it
         // will send messages to a closed EventLoop.
-        self.network_poll_stopped.store(true, Ordering::Relaxed);
+        self.network_poll_stopped
+            .1
+            .set_readiness(Ready::readable())
+            .expect("Set network_poll_stopped readiness failure");
         if let Some(thread) = self.network_poll_thread.lock().take() {
             thread.join().unwrap_or_else(|e| {
                 debug!("Error joining network poll thread: {:?}", e);
@@ -679,26 +683,40 @@ where Message: Send + Sync + 'static
                 debug!("Error joining IO service event loop thread: {:?}", e);
             });
         }
-        trace!("[IoService] Closed.");
+        debug!("[IoService] Closed.");
     }
 
     pub fn start_network_poll(
         &self, network_poll: Arc<Poll>, handler: Arc<dyn IoHandler<Message>>,
         main_event_loop_channel: IoChannel<Message>, max_sessions: usize,
+        stop_token: usize,
     )
     {
-        let network_poll_stopped = self.network_poll_stopped.clone();
+        network_poll
+            .register(
+                &self.network_poll_stopped.0,
+                Token(stop_token),
+                Ready::readable(),
+                PollOpt::edge(),
+            )
+            .expect("network_poll register failure");
         let thread = thread::Builder::new()
             .name("network_eventloop".into())
             .spawn(move || {
                 let mut events = Events::with_capacity(max_sessions);
-                while !network_poll_stopped.load(Ordering::Relaxed) {
+                loop {
                     network_poll
                         .poll(&mut events, None)
                         .expect("Network poll failure");
                     let _timer =
                         MeterTimer::time_func(NET_POLL_THREAD_TIMER.as_ref());
                     for event in &events {
+                        // IoService is dropped and we should stop this thread
+                        if event.token().0 == stop_token {
+                            assert!(event.readiness().is_readable());
+                            return;
+                        }
+
                         let handler_id = 0;
                         let token_id = event.token().0 % TOKENS_PER_HANDLER;
                         if event.readiness().is_readable() {

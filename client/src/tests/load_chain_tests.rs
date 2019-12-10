@@ -52,7 +52,7 @@ fn get_expected_best_hash() -> String {
 #[test]
 fn test_load_chain() {
     let mut conf = Configuration::default();
-    conf.raw_conf.test_mode = true;
+    conf.raw_conf.mode = Some("test".to_owned());
     let tmp_dir = TempDir::new("conflux-test").unwrap();
     conf.raw_conf.db_dir = Some(
         tmp_dir
@@ -74,7 +74,7 @@ fn test_load_chain() {
     conf.raw_conf.jsonrpc_http_port = Some(18000);
 
     let exit = Arc::new((Mutex::new(false), Condvar::new()));
-    let handle = ArchiveClient::start(conf, exit.clone()).unwrap();
+    let handle = ArchiveClient::start(conf, exit).unwrap();
 
     let chain_path = "../tests/blockchain_tests/general_2.json";
 

@@ -8,8 +8,8 @@ pub mod consensus_new_block_handler;
 
 use crate::{
     block_data_manager::{
-        BlockDataManager, BlockExecutionResultWithEpoch,
-        ConsensusGraphExecutionInfo, EpochExecutionContext,
+        block_data_types::EpochExecutionCommitment, BlockDataManager,
+        BlockExecutionResultWithEpoch, EpochExecutionContext,
     },
     consensus::{anticone_cache::AnticoneCache, pastset_cache::PastSetCache},
     parameters::{consensus::*, consensus_internal::*},
@@ -23,8 +23,8 @@ use link_cut_tree::{
 };
 use parking_lot::Mutex;
 use primitives::{
-    receipt::Receipt, Block, BlockHeader, BlockHeaderBuilder,
-    StateRootWithAuxInfo, TransactionAddress,
+    receipt::Receipt, Block, BlockHeader, BlockHeaderBuilder, EpochId,
+    TransactionAddress,
 };
 use slab::Slab;
 use std::{
@@ -69,9 +69,6 @@ pub struct ConsensusGraphNodeData {
     /// block is as pivot chain block. This set does not contain
     /// the block itself.
     blockset_in_own_view_of_epoch: Vec<usize>,
-    /// The number of blocks in the last two era. Only such blocks are counted
-    /// during difficulty adjustment.
-    num_epoch_blocks_in_2era: usize,
     /// Ordered executable blocks in this epoch. This filters out blocks that
     /// are not in the same era of the epoch pivot block.
     ///
@@ -82,16 +79,18 @@ pub struct ConsensusGraphNodeData {
     /// its size.
     pub blockset_cleared: bool,
     pub sequence_number: u64,
-    /// exec_info_lca_height indicates the fork_at height that the vote_valid
+    /// vote_valid_lca_height indicates the fork_at height that the vote_valid
     /// field corresponds to.
-    exec_info_lca_height: u64,
+    vote_valid_lca_height: u64,
     /// It indicates whether the blame voting information of this block is
     /// correct or not.
     vote_valid: bool,
-    /// It indicates whether the states stored in header is correct or not
+    /// It indicates whether the states stored in header is correct or not.
+    /// It's evaluated when needed, i.e., when we need the blame information to
+    /// generate a new block or to compute rewards.
     /// FIXME: only used for pivot chain, maybe we can move it to
     /// `ConsensusGraphPivotData`
-    pub state_valid: bool,
+    pub state_valid: Option<bool>,
 }
 
 impl ConsensusGraphNodeData {
@@ -101,13 +100,12 @@ impl ConsensusGraphNodeData {
             partial_invalid: false,
             pending: false,
             blockset_in_own_view_of_epoch: Default::default(),
-            num_epoch_blocks_in_2era: 0,
             ordered_executable_epoch_blocks: Default::default(),
             blockset_cleared: false,
             sequence_number,
-            exec_info_lca_height: NULLU64,
+            vote_valid_lca_height: NULLU64,
             vote_valid: true,
-            state_valid: true,
+            state_valid: None,
         }
     }
 }
@@ -260,6 +258,22 @@ impl Default for ConsensusGraphPivotData {
 /// state root of the block is simply the original deferred state root, i.e.,
 /// DSRi+3 for block Bi+3 in the above case.
 ///
+/// Computing the reward for a block relies on correct blaming behavior of
+/// the block. If the block is a pivot block when computing its reward,
+/// it is required that:
+/// 1. the block correctly chooses its parent;
+/// 2. the block contains the correct deferred state root;
+/// 3. the block correctly blames all its previous blocks following parent
+///    edges.
+///
+/// If the block is an off-pivot block when computing its reward,
+/// it is required that:
+/// 1. the block correctly chooses its parent;
+/// 2. the block correctly blames the blocks in the intersection of pivot chain
+///    blocks and all its previous blocks following parent edges. (This is to
+///    encourage the node generating the off-pivot block to keep verifying
+///    pivot chain blocks.)
+///
 /// To provide proof of state root to light node (or a full node when it tries
 /// to recover from a checkpoint), the protocol goes through the following
 /// steps. Let's assume the verifier has a subtree of block headers which
@@ -314,10 +328,6 @@ pub struct ConsensusGraphInner {
     // The height of the ``stable'' era block, unless from the start, it is
     // always era_epoch_count higher than era_genesis_height
     cur_era_stable_height: u64,
-    // The ``original'' genesis state root, receipts root, and logs bloom hash.
-    genesis_block_state_root: H256,
-    genesis_block_receipts_root: H256,
-    genesis_block_logs_bloom_hash: H256,
     // weight_tree maintains the subtree weight of each node in the TreeGraph
     weight_tree: DefaultMinLinkCutTree,
     inclusive_weight_tree: SizeMinLinkCutTree,
@@ -345,17 +355,17 @@ pub struct ConsensusGraphInner {
     // large so we periodically remove old ones in the cache.
     anticone_cache: AnticoneCache,
     pastset_cache: PastSetCache,
-    // The cache to store execution information of nodes in the consensus graph
-    pub execution_info_cache: HashMap<usize, ConsensusGraphExecutionInfo>,
     sequence_number_of_block_entrance: u64,
     last_recycled_era_block: usize,
     /// Block set of each old era. It will garbage collected by sync graph
     pub old_era_block_set: Mutex<VecDeque<H256>>,
-    /// This is the first trusted blame block for stable genesis. During full
-    /// node recovery, we will not do state validation for blocks between
-    /// `stable genesis` and `first_trusted_blame_block`.
-    first_trusted_blame_block: H256,
-    first_trusted_blame_block_height: u64,
+
+    /// The lowest height of the epochs that have available states and
+    /// commitments. For archive node, it equals `cur_era_stable_height`.
+    /// For light node, it equals the height of remotely synchronized state at
+    /// start, and equals `cur_era_stable_height` after making a new
+    /// checkpoint.
+    pub state_boundary_height: u64,
 }
 
 pub struct ConsensusGraphNode {
@@ -371,6 +381,10 @@ pub struct ConsensusGraphNode {
     stable: bool,
     adaptive: bool,
     pub parent: usize,
+
+    /// The genesis arena index of the era that `self` is in.
+    ///
+    /// It is `NULL` if `self` is not in the subtree of `cur_era_genesis`.
     era_block: usize,
     last_pivot_in_past: u64,
     children: Vec<usize>,
@@ -394,35 +408,19 @@ impl ConsensusGraphNode {
 }
 
 impl ConsensusGraphInner {
-    pub fn with_era_genesis_block(
+    pub fn with_era_genesis(
         pow_config: ProofOfWorkConfig, data_man: Arc<BlockDataManager>,
         inner_conf: ConsensusInnerConfig, cur_era_genesis_block_hash: &H256,
-        first_trusted_blame_block: Option<H256>,
     ) -> Self
     {
-        let genesis_block = data_man
-            .block_by_hash(
-                cur_era_genesis_block_hash,
-                true, /* update_cache */
-            )
-            .unwrap();
-        let cur_era_genesis_height = genesis_block.block_header.height();
+        let genesis_block_header = data_man
+            .block_header_by_hash(cur_era_genesis_block_hash)
+            .expect("genesis block header should exist here");
+        let cur_era_genesis_height = genesis_block_header.height();
         let cur_era_stable_height = if cur_era_genesis_height == 0 {
             0
         } else {
             cur_era_genesis_height + inner_conf.era_epoch_count
-        };
-        let first_trusted_blame_block = first_trusted_blame_block
-            .unwrap_or(data_man.true_genesis_block.hash());
-        let first_trusted_blame_block_height = if first_trusted_blame_block
-            == data_man.true_genesis_block.hash()
-        {
-            0
-        } else {
-            data_man
-                .block_header_by_hash(&first_trusted_blame_block)
-                .unwrap()
-                .height()
         };
         let initial_difficulty = pow_config.initial_difficulty;
         let mut inner = ConsensusGraphInner {
@@ -435,21 +433,6 @@ impl ConsensusGraphInner {
             cur_era_genesis_block_arena_index: NULL,
             cur_era_genesis_height,
             cur_era_stable_height,
-            genesis_block_state_root: data_man
-                .genesis_block()
-                .block_header
-                .deferred_state_root()
-                .clone(),
-            genesis_block_receipts_root: data_man
-                .genesis_block()
-                .block_header
-                .deferred_receipts_root()
-                .clone(),
-            genesis_block_logs_bloom_hash: data_man
-                .genesis_block()
-                .block_header
-                .deferred_logs_bloom_hash()
-                .clone(),
             weight_tree: DefaultMinLinkCutTree::new(),
             inclusive_weight_tree: SizeMinLinkCutTree::new(),
             stable_weight_tree: DefaultMinLinkCutTree::new(),
@@ -462,63 +445,43 @@ impl ConsensusGraphInner {
             inner_conf,
             anticone_cache: AnticoneCache::new(),
             pastset_cache: Default::default(),
-            execution_info_cache: HashMap::new(),
             sequence_number_of_block_entrance: 0,
             // TODO handle checkpoint in recovery
             last_recycled_era_block: 0,
             old_era_block_set: Mutex::new(VecDeque::new()),
-            first_trusted_blame_block,
-            first_trusted_blame_block_height,
+            state_boundary_height: cur_era_stable_height,
         };
 
         // NOTE: Only genesis block will be first inserted into consensus graph
         // and then into synchronization graph. All the other blocks will be
         // inserted first into synchronization graph then consensus graph.
         // For genesis block, its past weight is simply zero (default value).
-        let (genesis_arena_index, _) =
-            inner.insert(&genesis_block.block_header);
+        let (genesis_arena_index, _) = inner.insert(&genesis_block_header);
+        if genesis_block_header.height() == 0 {
+            inner.arena[genesis_arena_index].data.state_valid = Some(true);
+        }
         inner.cur_era_genesis_block_arena_index = genesis_arena_index;
+        let genesis_block_weight = genesis_block_header.difficulty().low_u128();
         inner
             .weight_tree
             .make_tree(inner.cur_era_genesis_block_arena_index);
         inner.weight_tree.path_apply(
             inner.cur_era_genesis_block_arena_index,
-            i128::try_from(
-                data_man
-                    .genesis_block()
-                    .block_header
-                    .difficulty()
-                    .low_u128(),
-            )
-            .unwrap(),
+            genesis_block_weight as i128,
         );
         inner
             .inclusive_weight_tree
             .make_tree(inner.cur_era_genesis_block_arena_index);
         inner.inclusive_weight_tree.path_apply(
             inner.cur_era_genesis_block_arena_index,
-            i128::try_from(
-                data_man
-                    .genesis_block()
-                    .block_header
-                    .difficulty()
-                    .low_u128(),
-            )
-            .unwrap(),
+            genesis_block_weight as i128,
         );
         inner
             .stable_weight_tree
             .make_tree(inner.cur_era_genesis_block_arena_index);
         inner.stable_weight_tree.path_apply(
             inner.cur_era_genesis_block_arena_index,
-            i128::try_from(
-                data_man
-                    .genesis_block()
-                    .block_header
-                    .difficulty()
-                    .low_u128(),
-            )
-            .unwrap(),
+            genesis_block_weight as i128,
         );
         inner
             .stable_tree
@@ -545,9 +508,15 @@ impl ConsensusGraphInner {
             .set(inner.cur_era_genesis_block_arena_index, 0);
         inner.arena[inner.cur_era_genesis_block_arena_index]
             .data
-            .epoch_number = 0;
+            .epoch_number = cur_era_genesis_height;
+        inner.arena[inner.cur_era_genesis_block_arena_index].past_num_blocks =
+            inner
+                .data_man
+                .get_epoch_execution_context(cur_era_genesis_block_hash)
+                .expect("ExecutionContext for cur_era_genesis exists")
+                .start_block_number;
         inner.arena[inner.cur_era_genesis_block_arena_index]
-            .last_pivot_in_past = genesis_block.block_header.height();
+            .last_pivot_in_past = cur_era_genesis_height;
         inner
             .pivot_chain
             .push(inner.cur_era_genesis_block_arena_index);
@@ -558,28 +527,10 @@ impl ConsensusGraphInner {
             last_pivot_in_past_blocks,
         });
 
-        // FIXME: Set execution context and past_num_blocks with data on disk
-        inner.data_man.insert_epoch_execution_context(
-            data_man.genesis_block().hash(),
-            EpochExecutionContext {
-                start_block_number: 0,
-            },
-            true, /* persistent to db */
-        );
-
         inner
             .anticone_cache
             .update(inner.cur_era_genesis_block_arena_index, &BitSet::new());
-        if let Some(exe_info) = inner
-            .data_man
-            .consensus_graph_execution_info_from_db(cur_era_genesis_block_hash)
-        {
-            inner
-                .execution_info_cache
-                .insert(genesis_arena_index, exe_info);
-        } else {
-            info!("No execution info for cur_era_genesis in db!");
-        }
+
         inner
     }
 
@@ -680,9 +631,11 @@ impl ConsensusGraphInner {
         }
         let height = self.arena[parent].height;
         let era_genesis_height = self.get_era_genesis_height(height, offset);
-        debug!(
+        trace!(
             "height={} era_height={} era_genesis_height={}",
-            height, era_genesis_height, self.cur_era_genesis_height
+            height,
+            era_genesis_height,
+            self.cur_era_genesis_height
         );
         self.ancestor_at(parent, era_genesis_height)
     }
@@ -1287,18 +1240,18 @@ impl ConsensusGraphInner {
             cur = self.arena[cur].parent;
         }
         path_to_lca.reverse();
-        let mut visited = HashSet::new();
+        let mut visited = BitSet::new();
         for ancestor_arena_index in path_to_lca {
-            visited.insert(ancestor_arena_index);
+            visited.add(ancestor_arena_index as u32);
             if ancestor_arena_index == pivot
                 || self.arena[ancestor_arena_index].data.blockset_cleared
             {
                 let mut queue = VecDeque::new();
                 for referee in &self.arena[ancestor_arena_index].referees {
                     if !pastset.contains(*referee as u32)
-                        && !visited.contains(referee)
+                        && !visited.contains(*referee as u32)
                     {
-                        visited.insert(*referee);
+                        visited.add(*referee as u32);
                         queue.push_back(*referee);
                     }
                 }
@@ -1312,16 +1265,16 @@ impl ConsensusGraphInner {
                     let parent = self.arena[index].parent;
                     if parent != NULL
                         && !pastset.contains(parent as u32)
-                        && !visited.contains(&parent)
+                        && !visited.contains(parent as u32)
                     {
-                        visited.insert(parent);
+                        visited.add(parent as u32);
                         queue.push_back(parent);
                     }
                     for referee in &self.arena[index].referees {
                         if !pastset.contains(*referee as u32)
-                            && !visited.contains(referee)
+                            && !visited.contains(*referee as u32)
                         {
-                            visited.insert(*referee);
+                            visited.add(*referee as u32);
                             queue.push_back(*referee);
                         }
                     }
@@ -1331,7 +1284,7 @@ impl ConsensusGraphInner {
                     .data
                     .blockset_in_own_view_of_epoch
                 {
-                    visited.insert(*index);
+                    visited.add(*index as u32);
                 }
             }
         }
@@ -1406,25 +1359,7 @@ impl ConsensusGraphInner {
             .filter(|idx| self.is_same_era(**idx, pivot))
             .map(|idx| *idx)
             .collect();
-        // FIXME Double check if it's okay to use cur_era_genesis instead of
-        // two_era_block        let two_era_block =
-        // self.get_era_genesis_block_with_parent(
-        // self.arena[pivot].parent,
-        // self.inner_conf.era_epoch_count,        );
 
-        // Here `num_epoch_blocks_in_2era` might be incorrect for pending blocks
-        // (either really pending because it's past stable block or just
-        // pending because it's being inserted during recovery.
-        let two_era_block = self.cur_era_genesis_block_arena_index;
-        self.arena[pivot].data.num_epoch_blocks_in_2era = self.arena[pivot]
-            .data
-            .blockset_in_own_view_of_epoch
-            .iter()
-            .filter(|idx| {
-                let lca = self.lca(**idx, two_era_block);
-                lca == two_era_block
-            })
-            .count();
         self.arena[pivot].data.ordered_executable_epoch_blocks =
             self.topological_sort(&filtered_blockset);
         self.arena[pivot]
@@ -1536,14 +1471,15 @@ impl ConsensusGraphInner {
             >= U512::from(self.inner_conf.heavy_block_difficulty_ratio)
                 * U512::from(block_header.difficulty());
 
-        let parent = if hash != self.data_man.genesis_block().hash() {
-            self.hash_to_arena_indices
-                .get(block_header.parent_hash())
-                .cloned()
-                .unwrap()
-        } else {
-            NULL
-        };
+        let parent =
+            if hash != self.data_man.get_cur_consensus_era_genesis_hash() {
+                self.hash_to_arena_indices
+                    .get(block_header.parent_hash())
+                    .cloned()
+                    .unwrap()
+            } else {
+                NULL
+            };
 
         let mut referees: Vec<usize> = Vec::new();
         for hash in block_header.referee_hashes().iter() {
@@ -1715,8 +1651,30 @@ impl ConsensusGraphInner {
     }
 
     /// Return the consensus graph indexes of the pivot block where the rewards
-    /// of its epoch should be computed The rewards are needed to compute
-    /// the state of the epoch at height `state_at` of `chain`
+    /// of its epoch should be computed.
+    ///
+    ///   epoch to                         Block holding
+    ///   compute reward                   the reward state
+    ///                         Block epoch                  Block with
+    ///   | [Bi1]   |           for cared                    [Bj]'s state
+    ///   |     \   |           anticone                     as deferred root
+    /// --|----[Bi]-|--------------[Ba]---------[Bj]----------[Bt]
+    ///   |    /    |
+    ///   | [Bi2]   |
+    ///
+    /// Let i([Bi]) is the arena index of [Bi].
+    /// Let h([Bi]) is the height of [Bi].
+    ///
+    /// Params:
+    ///   epoch_arena_index: the arena index of [Bj]
+    /// Return:
+    ///   Option<(i([Bi]), i([Ba]))>
+    ///
+    /// The gap between [Bj] and [Bi], i.e., h([Bj])-h([Bi]),
+    /// is REWARD_EPOCH_COUNT.
+    /// Let D is the gap between the parent of the genesis of next era and [Bi].
+    /// The gap between [Ba] and [Bi] is
+    ///     min(ANTICONE_PENALTY_UPPER_EPOCH_COUNT, D).
     fn get_pivot_reward_index(
         &self, epoch_arena_index: usize,
     ) -> Option<(usize, usize)> {
@@ -1884,7 +1842,10 @@ impl ConsensusGraphInner {
                     &self.arena[parent_arena_index].hash,
                     |h| {
                         let index = self.hash_to_arena_indices.get(h).unwrap();
-                        self.arena[*index].data.num_epoch_blocks_in_2era
+                        self.arena[*index]
+                            .data
+                            .ordered_executable_epoch_blocks
+                            .len()
                     },
                 )
             }
@@ -1915,7 +1876,10 @@ impl ConsensusGraphInner {
                 &new_best_hash,
                 |h| {
                     let index = self.hash_to_arena_indices.get(h).unwrap();
-                    self.arena[*index].data.num_epoch_blocks_in_2era
+                    self.arena[*index]
+                        .data
+                        .ordered_executable_epoch_blocks
+                        .len()
                 },
             );
         } else {
@@ -1984,7 +1948,11 @@ impl ConsensusGraphInner {
         }
         let mut idx = *idx_opt.unwrap();
         for _i in 0..delay {
-            trace!("get_state_block_with_delay: idx={}", idx);
+            trace!(
+                "get_state_block_with_delay: idx={}, height={}",
+                idx,
+                self.arena[idx].height
+            );
             if idx == self.cur_era_genesis_block_arena_index {
                 // If it is the original genesis, we just break
                 if self.arena[self.cur_era_genesis_block_arena_index].height
@@ -2024,6 +1992,8 @@ impl ConsensusGraphInner {
         }
     }
 
+    // FIXME: There is another function epoch_hash(&self).. What's the
+    // difference?
     pub fn get_hash_from_epoch_number(
         &self, epoch_number: u64,
     ) -> Result<H256, String> {
@@ -2234,46 +2204,118 @@ impl ConsensusGraphInner {
         }
     }
 
+    ////////////////////////////////////////////////////////////////////
+    ///                   _________ 5 __________
+    ///                   |                    |
+    ///  state_valid:           t    f    f    f
+    /// <----------------[Bl]-[Bk]-[Bj]-[Bi]-[Bp]-[Bm]----
+    ///   [Dj]-[Di]-[Dp]-[Dm]
+    ///
+    /// [Bp] is the parent of [Bm]
+    /// [Dm] is the deferred state root of [Bm]. This is a rough definition
+    /// representing deferred state/receipt/blame root
+    /// i([Bm]) is the arena index of [Bm]
+    /// e([Bm]) is the execution commitment of [Bm]
+    /// [Dm] can be generated from e([Bl])
+    ///
+    /// Param:
+    ///   i([Bp]),
+    ///   e([Bl]),
+    /// Return:
+    ///   The blame and the deferred blame roots information that should be
+    ///   contained in header of [Bm].
+    ///   (blame,
+    ///    deferred_blame_state_root,
+    ///    deferred_blame_receipt_root,
+    ///    deferred_blame_bloom_root)
+    ///
+    /// Assumption:
+    ///   * [Bm] is a pivot block on current pivot chain.
+    ///   This assumption is derived from the following cases:
+    ///   1. This function may be triggered when evaluating the reward for the
+    ///      blocks in epoch of [Bm]. This relies on the state_valid value of
+    ///      [Bm]. In other words, in this case, this function is triggered
+    ///      when computing the state_valid value of [Bm].
+    ///   2. This function may be triggered when mining [Bm].
+    ///
+    ///   * The execution commitments of blocks needed do exist.
+    ///
+    ///   * [Bm] is in stable era.
+    ///   This assumption is derived from the following cases:
+    ///   1. In normal run, before updating stable era genesis, we always
+    ///      make state_valid of all the pivot blocks before the new
+    ///      stable era genesis computed.
+    ///   2. The recover phase (including both archive and full node)
+    ///      prepares the graph state to the normal run state before
+    ///      calling this function.
+    ///
+    /// This function searches backward for all the blocks whose
+    /// state_valid are false, starting from [Bp]. The number of found
+    /// blocks is the 'blame' of [Bm]. if 'blame' == 0, the deferred blame
+    /// root information of [Bm] is simply [Dm], otherwise, it is computed
+    /// from the vector of deferred state roots of these found blocks
+    /// together with [Bm], e.g., in the above example, 'blame'==3, and
+    /// the vector of deferred roots of these blocks is
+    /// ([Dm], [Dp], [Di], [Dj]), therefore, the deferred blame root of
+    /// [Bm] is keccak([Dm], [Dp], [Di], [Dj]).
     fn compute_blame_and_state_with_execution_result(
-        &self, parent: usize, exec_result: (StateRootWithAuxInfo, H256, H256),
-    ) -> Result<(u32, StateRootWithAuxInfo, H256, H256, H256), String> {
+        &self, parent: usize, exec_result: &EpochExecutionCommitment,
+    ) -> Result<(u32, H256, H256, H256), String> {
         let mut cur = parent;
         let mut blame: u32 = 0;
         let mut state_blame_vec = Vec::new();
         let mut receipt_blame_vec = Vec::new();
         let mut bloom_blame_vec = Vec::new();
-        state_blame_vec
-            .push(exec_result.0.state_root.compute_state_root_hash());
-        receipt_blame_vec.push(exec_result.1.clone());
-        bloom_blame_vec.push(exec_result.2.clone());
+        state_blame_vec.push(
+            exec_result
+                .state_root_with_aux_info
+                .state_root
+                .compute_state_root_hash(),
+        );
+        receipt_blame_vec.push(exec_result.receipts_root.clone());
+        bloom_blame_vec.push(exec_result.logs_bloom_hash.clone());
         loop {
-            if self.arena[cur].data.state_valid {
+            if self.arena[cur]
+                .data
+                .state_valid
+                .expect("computed by the caller")
+            {
+                // The state_valid for this block and blocks before have been
+                // computed
                 break;
             }
-            let exec_info_opt = self.execution_info_cache.get(&cur);
-            if exec_info_opt.is_none() {
-                return Err("Failed to compute blame and state due to stale consensus graph state".to_owned());
-            }
-            let exec_info = exec_info_opt.unwrap();
+
+            debug!("compute_blame_and_state_with_execution_result: cur={} height={}", cur, self.arena[cur].height);
+            let deferred_arena_index =
+                self.get_deferred_state_arena_index(cur)?;
+            let deferred_block_commitment = self
+                .data_man
+                .get_epoch_execution_commitment(
+                    &self.arena[deferred_arena_index].hash,
+                )
+                .ok_or("State block commitment missing")?;
             blame += 1;
-            if cur == self.cur_era_genesis_block_arena_index {
+            if self.arena[cur].height == self.cur_era_genesis_height {
                 return Err(
                     "Failed to compute blame and state due to out of era"
                         .to_owned(),
                 );
             }
-            state_blame_vec
-                .push(exec_info.original_deferred_state_root.clone());
+            state_blame_vec.push(
+                deferred_block_commitment
+                    .state_root_with_aux_info
+                    .state_root
+                    .compute_state_root_hash(),
+            );
             receipt_blame_vec
-                .push(exec_info.original_deferred_receipt_root.clone());
+                .push(deferred_block_commitment.receipts_root.clone());
             bloom_blame_vec
-                .push(exec_info.original_deferred_logs_bloom_hash.clone());
+                .push(deferred_block_commitment.logs_bloom_hash.clone());
             cur = self.arena[cur].parent;
         }
         if blame > 0 {
             Ok((
                 blame,
-                exec_result.0,
                 BlockHeaderBuilder::compute_blame_state_root_vec_root(
                     state_blame_vec,
                 ),
@@ -2287,7 +2329,6 @@ impl ConsensusGraphInner {
         } else {
             Ok((
                 0,
-                exec_result.0,
                 state_blame_vec.pop().unwrap(),
                 receipt_blame_vec.pop().unwrap(),
                 bloom_blame_vec.pop().unwrap(),
@@ -2295,99 +2336,64 @@ impl ConsensusGraphInner {
         }
     }
 
-    fn compute_execution_info_with_result(
-        &mut self, me: usize, exec_result: (StateRootWithAuxInfo, H256, H256),
+    // FIXME: maybe this method can be simplified.
+    /// Compute `state_valid` for `me`.
+    /// Assumption:
+    ///   1. The precedents of `me` have computed state_valid
+    ///   2. The execution_commitment for deferred state block of `me` exist.
+    ///   3. `me` is in stable era.
+    fn compute_state_valid_for_block(
+        &mut self, me: usize,
     ) -> Result<(), String> {
-        // For the original genesis, it is always correct
-        if self.arena[me].height == 0 {
-            self.arena[me].data.state_valid = true;
-            let exec_info = ConsensusGraphExecutionInfo {
-                original_deferred_state_root: self.genesis_block_state_root,
-                original_deferred_receipt_root: self
-                    .genesis_block_receipts_root,
-                original_deferred_logs_bloom_hash: self
-                    .genesis_block_logs_bloom_hash,
-            };
-            self.data_man.insert_consensus_graph_execution_info_to_db(
-                &self.arena[me].hash,
-                &exec_info,
-            );
-            self.execution_info_cache.insert(me, exec_info);
-            return Ok(());
-        }
-        let parent = self.arena[me].parent;
-        let original_deferred_state_root =
-            exec_result.0.state_root.compute_state_root_hash();
-        let original_deferred_receipt_root = exec_result.1.clone();
-        let original_deferred_logs_bloom_hash = exec_result.2.clone();
-        // We will skip state validation if `cur_era_stable_height <= lca.height
-        // && lca.height < first_trusted_blame_block_height` where lca
-        // is the lowest common ancestor of `first_trusted_blame_block`
-        // and `parent`.
-        let skip_state_validation = {
-            if self.first_trusted_blame_block_height
-                > self.cur_era_stable_height
-            {
-                if self.arena[parent].height
-                    < self.first_trusted_blame_block_height
-                {
-                    true
-                } else {
-                    let arena_index_opt = self
-                        .hash_to_arena_indices
-                        .get(&self.first_trusted_blame_block);
-                    if arena_index_opt.is_some() {
-                        let lca = self.lca(*arena_index_opt.unwrap(), parent);
-                        self.arena[lca].height
-                            < self.first_trusted_blame_block_height
-                    } else {
-                        false
-                    }
-                }
-            } else {
-                false
-            }
-        };
-        if !skip_state_validation {
-            let (
-                blame,
-                _,
-                deferred_state_root,
-                deferred_receipt_root,
-                deferred_logs_bloom_hash,
-            ) = self.compute_blame_and_state_with_execution_result(
-                parent,
-                exec_result,
-            )?;
-            let block_header = self
-                .data_man
-                .block_header_by_hash(&self.arena[me].hash)
-                .unwrap();
-            let state_valid = block_header.blame() == blame
-                && *block_header.deferred_state_root() == deferred_state_root
-                && *block_header.deferred_receipts_root()
-                    == deferred_receipt_root
-                && *block_header.deferred_logs_bloom_hash()
-                    == deferred_logs_bloom_hash;
-
-            if state_valid {
-                debug!("compute_execution_info_with_result(): Block {} state/blame is valid.", self.arena[me].hash);
-            } else {
-                debug!("compute_execution_info_with_result(): Block {} state/blame is invalid! header blame {}, our blame {}, header state_root {}, our state root {}, header receipt_root {}, our receipt root {}, header logs_bloom_hash {}, our logs_bloom_hash {}.", self.arena[me].hash, block_header.blame(), blame, block_header.deferred_state_root(), deferred_state_root, block_header.deferred_receipts_root(), deferred_receipt_root, block_header.deferred_logs_bloom_hash(), deferred_logs_bloom_hash);
-            }
-
-            self.arena[me].data.state_valid = state_valid;
-        }
-        let exec_info = ConsensusGraphExecutionInfo {
-            original_deferred_state_root,
-            original_deferred_receipt_root,
-            original_deferred_logs_bloom_hash,
-        };
-        self.data_man.insert_consensus_graph_execution_info_to_db(
-            &self.arena[me].hash,
-            &exec_info,
+        debug!(
+            "compute_state_valid: me={} height={}",
+            me, self.arena[me].height
         );
-        self.execution_info_cache.insert(me, exec_info);
+        let deferred_state_arena_index =
+            self.get_deferred_state_arena_index(me)?;
+        let exec_commitment = self
+            .data_man
+            .get_epoch_execution_commitment(
+                &self.arena[deferred_state_arena_index].hash,
+            )
+            .expect("Commitment exist");
+        let parent = self.arena[me].parent;
+        let original_deferred_state_root = exec_commitment
+            .state_root_with_aux_info
+            .state_root
+            .compute_state_root_hash();
+        let original_deferred_receipt_root =
+            exec_commitment.receipts_root.clone();
+        let original_deferred_logs_bloom_hash =
+            exec_commitment.logs_bloom_hash.clone();
+
+        let (
+            blame,
+            deferred_state_root,
+            deferred_receipt_root,
+            deferred_logs_bloom_hash,
+        ) = self.compute_blame_and_state_with_execution_result(
+            parent,
+            &exec_commitment,
+        )?;
+        let block_header = self
+            .data_man
+            .block_header_by_hash(&self.arena[me].hash)
+            .unwrap();
+        let state_valid = block_header.blame() == blame
+            && *block_header.deferred_state_root() == deferred_state_root
+            && *block_header.deferred_receipts_root() == deferred_receipt_root
+            && *block_header.deferred_logs_bloom_hash()
+                == deferred_logs_bloom_hash;
+
+        if state_valid {
+            debug!("compute_state_valid_for_block(): Block {} state/blame is valid.", self.arena[me].hash);
+        } else {
+            debug!("compute_state_valid_for_block(): Block {} state/blame is invalid! header blame {}, our blame {}, header state_root {}, our state root {}, header receipt_root {}, our receipt root {}, header logs_bloom_hash {}, our logs_bloom_hash {}.", self.arena[me].hash, block_header.blame(), blame, block_header.deferred_state_root(), deferred_state_root, block_header.deferred_receipts_root(), deferred_receipt_root, block_header.deferred_logs_bloom_hash(), deferred_logs_bloom_hash);
+        }
+
+        self.arena[me].data.state_valid = Some(state_valid);
+
         if self.inner_conf.enable_state_expose {
             STATE_EXPOSER
                 .consensus_graph
@@ -2398,7 +2404,10 @@ impl ConsensusGraphInner {
                     deferred_state_root: original_deferred_state_root,
                     deferred_receipt_root: original_deferred_receipt_root,
                     deferred_logs_bloom_hash: original_deferred_logs_bloom_hash,
-                    state_valid: self.arena[me].data.state_valid,
+                    state_valid: self.arena[me]
+                        .data
+                        .state_valid
+                        .unwrap_or(true),
                 })
         }
 
@@ -2419,7 +2428,7 @@ impl ConsensusGraphInner {
         while !stack.is_empty() {
             let (stage, index, a) = stack.pop().unwrap();
             if stage == 0 {
-                if self.arena[index].data.exec_info_lca_height != lca_height {
+                if self.arena[index].data.vote_valid_lca_height != lca_height {
                     let header = self
                         .data_man
                         .block_header_by_hash(&self.arena[index].hash)
@@ -2443,23 +2452,29 @@ impl ConsensusGraphInner {
                         let mut cur = lca;
                         let mut vote_valid = true;
                         while cur_height > start_height {
-                            if self.arena[cur].data.state_valid {
+                            if self.arena[cur].data.state_valid
+                                .expect("state_valid for me has been computed in \
+                                wait_and_compute_state_valid_locked by the caller, \
+                                so the precedents should have state_valid") {
                                 vote_valid = false;
                                 break;
                             }
                             cur_height -= 1;
                             cur = self.arena[cur].parent;
                         }
-                        if vote_valid && !self.arena[cur].data.state_valid {
+                        if vote_valid && !self.arena[cur].data.state_valid
+                            .expect("state_valid for me has been computed in \
+                            wait_and_compute_state_valid_locked by the caller, \
+                            so the precedents should have state_valid") {
                             vote_valid = false;
                         }
-                        self.arena[index].data.exec_info_lca_height =
+                        self.arena[index].data.vote_valid_lca_height =
                             lca_height;
                         self.arena[index].data.vote_valid = vote_valid;
                     }
                 }
             } else {
-                self.arena[index].data.exec_info_lca_height = lca_height;
+                self.arena[index].data.vote_valid_lca_height = lca_height;
                 self.arena[index].data.vote_valid =
                     self.arena[a].data.vote_valid;
             }
@@ -2523,7 +2538,7 @@ impl ConsensusGraphInner {
         }
         while !stack.is_empty() {
             let (stage, me) = stack.pop().unwrap();
-            if !to_visit.contains(&me) {
+            if !to_visit.contains(&me) || self.arena[me].era_block == NULL {
                 continue;
             }
             let parent = self.arena[me].parent;
@@ -2538,7 +2553,11 @@ impl ConsensusGraphInner {
                 }
             } else if stage == 1 && me != self.cur_era_genesis_block_arena_index
             {
-                let mut last_pivot = self.arena[parent].last_pivot_in_past;
+                let mut last_pivot = if parent == NULL {
+                    0
+                } else {
+                    self.arena[parent].last_pivot_in_past
+                };
                 for referee in &self.arena[me].referees {
                     let x = self.arena[*referee].last_pivot_in_past;
                     last_pivot = max(last_pivot, x);
@@ -2617,42 +2636,69 @@ impl ConsensusGraphInner {
         .and_then(|index| Some(self.arena[self.pivot_chain[index]].hash))
     }
 
-    fn collect_blocks_missing_execution_info(
+    /// Return the epoch that we are going to sync the state
+    pub fn get_to_sync_epoch_id(&self) -> EpochId {
+        let height_to_sync = self.latest_snapshot_height();
+        // The height_to_sync is within the range of `self.pivit_chain`.
+        let epoch_to_sync = self.arena
+            [self.pivot_chain[self.height_to_pivot_index(height_to_sync)]]
+        .hash;
+        epoch_to_sync
+    }
+
+    /// FIXME Use snapshot-related information when we can sync snapshot states.
+    /// Return the latest height that a snapshot should be available.
+    fn latest_snapshot_height(&self) -> u64 { self.cur_era_stable_height }
+
+    fn collect_defer_blocks_missing_execution_commitments(
         &self, me: usize,
-    ) -> Result<Vec<(H256, H256)>, String> {
-        let mut cur = me;
+    ) -> Result<Vec<H256>, String> {
+        let mut cur = self.get_deferred_state_arena_index(me)?;
         let mut waiting_blocks = Vec::new();
-        while !self.execution_info_cache.contains_key(&cur) {
-            let cur_hash = self.arena[cur].hash.clone();
-            let state_hash = self
-                .get_state_block_with_delay(
-                    &cur_hash,
-                    DEFERRED_STATE_EPOCH_COUNT as usize,
-                )?
-                .clone();
-            waiting_blocks.push((cur_hash, state_hash));
-            if cur == self.cur_era_genesis_block_arena_index {
+        debug!(
+            "collect_blocks_missing_execution_commitments: me={}, height={}",
+            me, self.arena[me].height
+        );
+        loop {
+            let deferred_block_hash = self.arena[cur].hash;
+
+            if self
+                .data_man
+                .get_epoch_execution_commitment(&deferred_block_hash)
+                .is_some()
+                || self.arena[cur].height <= self.state_boundary_height
+            {
+                // This block and the blocks before have been executed or will
+                // not be executed
                 break;
             }
+            waiting_blocks.push(deferred_block_hash);
             cur = self.arena[cur].parent;
         }
         waiting_blocks.reverse();
         Ok(waiting_blocks)
     }
 
-    fn compute_execution_info_for_blocks(
-        &mut self,
-        waiting_result: Vec<(H256, (StateRootWithAuxInfo, H256, H256))>,
-    ) -> Result<(), String>
-    {
-        for (cur_hash, result) in waiting_result {
-            let index_opt = self.hash_to_arena_indices.get(&cur_hash);
-            if index_opt.is_none() {
-                return Err("Too old parent/subtree to prepare for generation"
-                    .to_owned());
+    /// Compute missing `state_valid` for `me` and all the precedents.
+    fn compute_state_valid(&mut self, me: usize) -> Result<(), String> {
+        // Collect all precedents whose state_valid is empty, and evaluate them
+        // in order
+        let mut blocks_to_compute = Vec::new();
+        let mut cur = me;
+        loop {
+            if self.arena[cur].data.state_valid.is_some() {
+                break;
             }
-            let index = *index_opt.unwrap();
-            self.compute_execution_info_with_result(index, result)?;
+            // See comments on compute_blame_and_state_with_execution_result()
+            // for explanation of this assumption.
+            assert!(self.arena[cur].height >= self.state_boundary_height);
+            blocks_to_compute.push(cur);
+            cur = self.arena[cur].parent;
+        }
+        blocks_to_compute.reverse();
+
+        for index in blocks_to_compute {
+            self.compute_state_valid_for_block(index)?;
         }
         Ok(())
     }
@@ -2693,5 +2739,76 @@ impl ConsensusGraphInner {
                 .blockset_in_own_view_of_epoch,
             block_set,
         );
+    }
+
+    fn get_deferred_state_arena_index(
+        &self, me: usize,
+    ) -> Result<usize, String> {
+        let mut idx = me;
+        for _ in 0..DEFERRED_STATE_EPOCH_COUNT {
+            if idx == self.cur_era_genesis_block_arena_index {
+                // If it is the original genesis, we just break
+                if self.arena[idx].height == 0 {
+                    break;
+                } else {
+                    return Err(
+                        "Parent is too old for computing the deferred state"
+                            .to_owned(),
+                    );
+                }
+            }
+            idx = self.arena[idx].parent;
+            if idx == NULL {
+                return Err("Parent is NULL, possibly out of era?".to_owned());
+            }
+        }
+        Ok(idx)
+    }
+
+    /// Find the first state valid block on the pivot chain after
+    /// `state_boundary_height` and set `state_valid` of it and its blamed
+    /// blocks. This block is found according to blame_ratio.
+    pub fn recover_state_valid(&mut self) {
+        let start_pivot_index =
+            (self.state_boundary_height - self.cur_era_genesis_height) as usize;
+        let start_epoch_hash =
+            self.arena[self.pivot_chain[start_pivot_index]].hash;
+        // We will get the first
+        // pivot block whose `state_valid` is `true` after `start_epoch_hash`
+        // (include `start_epoch_hash` itself).
+        let maybe_trusted_blame_block =
+            self.get_trusted_blame_block(&start_epoch_hash);
+        debug!("recover_state_valid: checkpoint={:?}, maybe_trusted_blame_block={:?}", start_epoch_hash, maybe_trusted_blame_block);
+
+        // Set `state_valid` of `trusted_blame_block` to true,
+        // and set that of the blocks blamed by it to false
+        if let Some(trusted_blame_block) = maybe_trusted_blame_block {
+            let mut cur = *self
+                .hash_to_arena_indices
+                .get(&trusted_blame_block)
+                .unwrap();
+            while cur != NULL {
+                let blame = self
+                    .data_man
+                    .block_header_by_hash(&self.arena[cur].hash)
+                    .unwrap()
+                    .blame();
+                for i in 0..blame + 1 {
+                    self.arena[cur].data.state_valid = Some(i == 0);
+                    trace!(
+                        "recover_state_valid: index={} hash={} state_valid={}",
+                        cur,
+                        self.arena[cur].hash,
+                        i == 0
+                    );
+                    cur = self.arena[cur].parent;
+                    if cur == NULL {
+                        break;
+                    }
+                }
+            }
+        } else {
+            error!("Fail to recover state_valid");
+        }
     }
 }

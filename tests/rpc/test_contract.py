@@ -1,13 +1,39 @@
 import sys
 
+import os
 sys.path.append("..")
 
+import eth_utils
+from conflux.config import default_config
 from conflux.rpc import RpcClient
 from test_framework.util import assert_equal
 
+from conflux.utils import privtoaddr, int_to_hex
+from test_framework.util import assert_equal, assert_is_hash_string
+from web3 import Web3
+from easysolc import Solc
 
 class TestContract(RpcClient):
+    def _deposit(self):
+        # lock tokens in bank
+        solc = Solc()
+        file_dir = os.path.dirname(os.path.realpath(__file__))
+        staking_contract = solc.get_contract_instance(
+            abi_file = os.path.join(file_dir, "../contracts/storage_interest_staking_abi.json"),
+            bytecode_file = os.path.join(file_dir, "../contracts/storage_interest_staking_bytecode.dat"),
+        )
+
+        gas_price = 1
+        gas = 50000000
+        self.tx_conf = {"gas":int_to_hex(gas), "gasPrice":int_to_hex(gas_price), "chainId":0}
+        staking_contract_addr = Web3.toChecksumAddress("443c409373ffd5c0bec1dddb7bec830856757b65")
+        self.tx_conf["to"] = staking_contract_addr
+        tx_data = eth_utils.decode_hex(staking_contract.functions.deposit(10000 * 10 ** 18).buildTransaction(self.tx_conf)["data"])
+        tx = self.new_tx(value=0, receiver=staking_contract_addr, data=tx_data, gas=gas, gas_price=gas_price)
+        self.send_tx(tx, True)
+
     def test_contract_deploy(self) -> str:
+        self._deposit()
         # test simple storage contract with default value (5)
         tx = self.new_contract_tx(
             "",

@@ -1,3 +1,4 @@
+use crate::storage::StateRootWithAuxInfo;
 use cfx_types::{Bloom, H256};
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use malloc_size_of_derive::MallocSizeOf as DeriveMallocSizeOf;
@@ -15,20 +16,11 @@ pub struct EpochExecutionContext {
 
 /// receipts_root and logs_bloom got after an epoch is executed.
 /// It is NOT deferred.
-#[derive(Clone)]
-pub struct EpochExecutionCommitments {
+#[derive(Clone, Debug, RlpEncodable, RlpDecodable)]
+pub struct EpochExecutionCommitment {
+    pub state_root_with_aux_info: StateRootWithAuxInfo,
     pub receipts_root: H256,
     pub logs_bloom_hash: H256,
-}
-
-/// The DEFERRED state_root, receipt_root, and logs_bloom of an block.
-/// They may not be the ones in the block header which is the hash of that of
-/// all blamed block headers if `blame` is not 0.
-#[derive(Clone, RlpEncodable, RlpDecodable, Default)]
-pub struct ConsensusGraphExecutionInfo {
-    pub original_deferred_state_root: H256,
-    pub original_deferred_receipt_root: H256,
-    pub original_deferred_logs_bloom_hash: H256,
 }
 
 /// `receipts` and `bloom` of a single block after execution.

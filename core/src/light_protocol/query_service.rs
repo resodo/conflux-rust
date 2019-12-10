@@ -4,33 +4,32 @@
 
 extern crate futures;
 
-use cfx_types::{Bloom, H160, H256, KECCAK_EMPTY_BLOOM};
-use futures::{future, stream, Future, Stream};
-use std::{collections::BTreeSet, sync::Arc};
-
-use primitives::{
-    filter::{Filter, FilterError},
-    log_entry::{LocalizedLogEntry, LogEntry},
-    Account, EpochNumber, Receipt, SignedTransaction, StateRoot,
-    TransactionAddress,
-};
-
 use crate::{
     consensus::ConsensusGraph,
+    light_protocol::{
+        common::{
+            poll_future, poll_stream, with_timeout, FullPeerFilter, LedgerInfo,
+        },
+        message::msgid,
+        Error, Handler as LightHandler, LIGHT_PROTOCOL_ID,
+        LIGHT_PROTOCOL_VERSION,
+    },
     network::{NetworkContext, NetworkService},
     parameters::{
         consensus::DEFERRED_STATE_EPOCH_COUNT,
         light::{LOG_FILTERING_LOOKAHEAD, MAX_POLL_TIME},
     },
-    statedb::StorageKey,
-    storage,
     sync::SynchronizationGraph,
 };
-
-use super::{
-    common::{poll_future, poll_stream, with_timeout, LedgerInfo},
-    Error, Handler as LightHandler, LIGHT_PROTOCOL_ID, LIGHT_PROTOCOL_VERSION,
+use cfx_types::{Bloom, H160, H256, KECCAK_EMPTY_BLOOM};
+use futures::{future, stream, Future, Stream};
+use primitives::{
+    filter::{Filter, FilterError},
+    log_entry::{LocalizedLogEntry, LogEntry},
+    Account, EpochNumber, Receipt, SignedTransaction, StateRoot, StorageKey,
+    TransactionAddress,
 };
+use std::{collections::BTreeSet, sync::Arc};
 
 type TxInfo = (
     SignedTransaction,
@@ -57,10 +56,14 @@ pub struct QueryService {
 impl QueryService {
     pub fn new(
         consensus: Arc<ConsensusGraph>, graph: Arc<SynchronizationGraph>,
-        network: Arc<NetworkService>,
+        network: Arc<NetworkService>, throttling_config_file: Option<String>,
     ) -> Self
     {
-        let handler = Arc::new(LightHandler::new(consensus.clone(), graph));
+        let handler = Arc::new(LightHandler::new(
+            consensus.clone(),
+            graph,
+            throttling_config_file,
+        ));
         let ledger = LedgerInfo::new(consensus.clone());
 
         QueryService {
@@ -164,26 +167,16 @@ impl QueryService {
         )
     }
 
-    fn account_key(root: &StateRoot, address: H160) -> Vec<u8> {
-        let padding = storage::MultiVersionMerklePatriciaTrie::padding(
-            &root.snapshot_root,
-            &root.intermediate_delta_root,
-        );
-
-        StorageKey::new_account_key(&address, &padding)
-            .as_ref()
-            .to_vec()
+    fn account_key(address: &H160) -> Vec<u8> {
+        StorageKey::AccountKey(&address.0).to_key_bytes()
     }
 
-    fn code_key(root: &StateRoot, address: H160, code_hash: H256) -> Vec<u8> {
-        let padding = storage::MultiVersionMerklePatriciaTrie::padding(
-            &root.snapshot_root,
-            &root.intermediate_delta_root,
-        );
-
-        StorageKey::new_code_key(&address, &code_hash, &padding)
-            .as_ref()
-            .to_vec()
+    fn code_key(address: &H160, code_hash: &H256) -> Vec<u8> {
+        StorageKey::CodeKey {
+            address_bytes: &address.0,
+            code_hash_bytes: &code_hash.0,
+        }
+        .to_key_bytes()
     }
 
     fn retrieve_account<'a>(
@@ -195,8 +188,11 @@ impl QueryService {
             address
         );
 
+        // FIXME: We don't need the state root when we don't verify the
+        // retrieved content. FIXME: but can we rule out the need for
+        // verification in the context?
         self.retrieve_state_root(epoch)
-            .map(move |root| Self::account_key(&root, address))
+            .map(move |_root| Self::account_key(&address))
             .and_then(move |key| self.retrieve_state_entry(epoch, key))
             .and_then(|entry| match entry {
                 Some(entry) => Ok(Some(rlp::decode(&entry[..])?)),
@@ -215,8 +211,11 @@ impl QueryService {
             code_hash
         );
 
+        // FIXME: We don't need the state root when we don't verify the
+        // retrieved content. FIXME: but can we rule out the need for
+        // verification in the context?
         self.retrieve_state_root(epoch)
-            .map(move |root| Self::code_key(&root, address, code_hash))
+            .map(move |_root| Self::code_key(&address, &code_hash))
             .and_then(move |key| self.retrieve_state_entry(epoch, key))
             .map_err(|e| format!("{}", e))
     }
@@ -303,7 +302,10 @@ impl QueryService {
 
         let mut success = false;
 
-        for peer in self.handler.peers.all_peers_shuffled() {
+        let peers = FullPeerFilter::new(msgid::SEND_RAW_TX)
+            .select_all(self.handler.peers.clone());
+
+        for peer in peers {
             // relay to peer
             let res = self.network.with_context(LIGHT_PROTOCOL_ID, |io| {
                 self.handler.send_raw_tx(io, peer, raw.clone())
@@ -350,7 +352,7 @@ impl QueryService {
     /// NOTE: `log.transaction_hash` is not known at this point,
     /// so this field has to be filled later on.
     fn filter_receipt_logs(
-        block_hash: H256, transaction_index: usize,
+        epoch: u64, block_hash: H256, transaction_index: usize,
         num_logs_remaining: &mut usize, mut logs: Vec<LogEntry>,
         filter: Filter,
     ) -> impl Iterator<Item = LocalizedLogEntry>
@@ -368,7 +370,7 @@ impl QueryService {
             .filter(move |(_, entry)| filter.matches(&entry))
             .map(move |(ii, entry)| LocalizedLogEntry {
                 block_hash,
-                block_number: 0, // TODO
+                epoch_number: epoch,
                 entry,
                 log_index: log_base_index - ii - 1,
                 transaction_hash: KECCAK_EMPTY_BLOOM, // will fill in later
@@ -379,7 +381,7 @@ impl QueryService {
 
     /// Apply filter to all receipts within a block.
     fn filter_block_receipts(
-        hash: H256, mut receipts: Vec<Receipt>, filter: Filter,
+        epoch: u64, hash: H256, mut receipts: Vec<Receipt>, filter: Filter,
     ) -> impl Iterator<Item = LocalizedLogEntry> {
         // number of receipts in this block
         let num_receipts = receipts.len();
@@ -394,6 +396,7 @@ impl QueryService {
             move |(ii, logs)| {
                 debug!("block_hash {:?} logs = {:?}", hash, logs);
                 Self::filter_receipt_logs(
+                    epoch,
                     hash,
                     num_receipts - ii - 1,
                     &mut remaining,
@@ -418,7 +421,12 @@ impl QueryService {
         let matching = receipts.into_iter().zip(hashes).flat_map(
             move |(receipts, hash)| {
                 trace!("block_hash {:?} receipts = {:?}", hash, receipts);
-                Self::filter_block_receipts(hash, receipts, filter.clone())
+                Self::filter_block_receipts(
+                    epoch,
+                    hash,
+                    receipts,
+                    filter.clone(),
+                )
             },
         );
 

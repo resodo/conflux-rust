@@ -80,7 +80,9 @@ build_config! {
         (transaction_request_timeout_ms, (u64), 30_000)
         (tx_maintained_for_peer_timeout_ms, (u64), 600_000)
         (max_inflight_request_count, (u64), 64)
-        (received_tx_index_maintain_timeout_ms, (u64), 600_000)
+        (received_tx_index_maintain_timeout_ms, (u64), 300_000)
+        (tx_cache_index_maintain_timeout_ms, (u64), 300_000)
+        (inflight_pending_tx_index_maintain_timeout_ms, (u64), 30_000)
         (max_trans_count_received_in_catch_up, (u64), 60_000)
         (request_block_with_public, (bool), false)
         (start_mining, (bool), false)
@@ -122,13 +124,40 @@ build_config! {
         (max_peers_propagation, (usize), 128)
         (future_block_buffer_capacity, (usize), 32768)
         (txgen_account_count, (usize), 10)
-        (tx_cache_count, (usize), 250000)
         (max_download_state_peers, (usize), 8)
         (block_db_type, (String), "rocksdb".to_string())
         (no_defer, (bool), false)
         (rocksdb_disable_wal, (bool), false)
         (enable_state_expose, (bool), false)
         (get_logs_filter_max_limit, (Option<usize>), None)
+        (throttling_conf, (Option<String>), None)
+
+        // Some preset configurations.
+        //
+        // For both `test` and `dev` modes, we will
+        //     * Set initial difficulty to 4
+        //     * Allow calling test and debug rpc from public port
+        //
+        // `test` mode is for Conflux testing and debugging, we will
+        //     * Add latency to peer connections
+        //     * Skip handshake encryption check
+        //     * Skip header timestamp verification
+        //     * Handle NewBlockHash even in catch-up mode
+        //     * Allow data propagation test
+        //     * Allow setting genesis accounts and generate tx from secrets
+        //
+        // `dev` mode is for users to run a single node that automatically
+        //     generates blocks with fixed intervals
+        //     * Open port 12536 for tcp rpc if `jsonrpc_tcp_port` is not provided.
+        //     * Open port 12537 for http rpc if `jsonrpc_http_port` is not provided.
+        //     * generate blocks automatically without PoW if `start_mining` is false
+        //     * Skip catch-up mode even there is no peer
+        //
+        (mode, (Option<String>), None)
+
+        // Controls block generation speed.
+        // Only effective in `dev` mode and `start_mining` is false
+        (dev_block_interval_ms, (u64), 250)
     }
     {
         (
@@ -206,7 +235,7 @@ impl Configuration {
             network_config.connection_lifetime_for_promotion =
                 Duration::from_secs(nt_promotion_timeout);
         }
-        network_config.test_mode = self.raw_conf.test_mode;
+        network_config.test_mode = self.is_test_mode();
         network_config.subnet_quota = self.raw_conf.subnet_quota;
         network_config.session_ip_limit_config =
             self.raw_conf.session_ip_limits.clone().try_into().map_err(
@@ -303,7 +332,7 @@ impl Configuration {
                     .expect("Stratum secret should be 64-digit hex string without 0x prefix"));
 
         ProofOfWorkConfig::new(
-            self.raw_conf.test_mode,
+            self.is_test_or_dev_mode(),
             self.raw_conf.use_stratum,
             self.raw_conf.initial_difficulty,
             stratum_listen_addr,
@@ -314,7 +343,7 @@ impl Configuration {
 
     pub fn verification_config(&self) -> VerificationConfig {
         VerificationConfig::new(
-            self.raw_conf.test_mode,
+            self.is_test_mode(),
             self.raw_conf.eth_compatibility_mode,
         )
     }
@@ -367,6 +396,9 @@ impl Configuration {
             received_tx_index_maintain_timeout: Duration::from_millis(
                 self.raw_conf.received_tx_index_maintain_timeout_ms,
             ),
+            inflight_pending_tx_index_maintain_timeout: Duration::from_millis(
+                self.raw_conf.inflight_pending_tx_index_maintain_timeout_ms,
+            ),
             max_trans_count_received_in_catch_up: self
                 .raw_conf
                 .max_trans_count_received_in_catch_up,
@@ -376,14 +408,18 @@ impl Configuration {
                 .raw_conf
                 .future_block_buffer_capacity,
             max_download_state_peers: self.raw_conf.max_download_state_peers,
-            test_mode: self.raw_conf.test_mode,
+            test_mode: self.is_test_mode(),
+            dev_mode: self.is_dev_mode(),
+            throttling_config_file: self.raw_conf.throttling_conf.clone(),
         }
     }
 
     pub fn data_mananger_config(&self) -> DataManagerConfiguration {
         DataManagerConfiguration::new(
             self.raw_conf.record_tx_address,
-            self.raw_conf.tx_cache_count,
+            Duration::from_millis(
+                self.raw_conf.tx_cache_index_maintain_timeout_ms,
+            ),
             match self.raw_conf.block_db_type.as_str() {
                 "rocksdb" => DbType::Rocksdb,
                 "sqlite" => DbType::Sqlite,
@@ -431,6 +467,27 @@ impl Configuration {
     pub fn rpc_impl_config(&self) -> RpcImplConfiguration {
         RpcImplConfiguration {
             get_logs_filter_max_limit: self.raw_conf.get_logs_filter_max_limit,
+        }
+    }
+
+    pub fn is_test_mode(&self) -> bool {
+        match self.raw_conf.mode.as_ref().map(|s| s.as_str()) {
+            Some("test") => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_dev_mode(&self) -> bool {
+        match self.raw_conf.mode.as_ref().map(|s| s.as_str()) {
+            Some("dev") => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_test_or_dev_mode(&self) -> bool {
+        match self.raw_conf.mode.as_ref().map(|s| s.as_str()) {
+            Some("dev") | Some("test") => true,
+            _ => false,
         }
     }
 }

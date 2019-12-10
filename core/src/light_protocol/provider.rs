@@ -4,7 +4,6 @@
 
 use io::TimerToken;
 use parking_lot::RwLock;
-use rand::Rng;
 use rlp::Rlp;
 use std::sync::{Arc, Weak};
 
@@ -41,9 +40,11 @@ use crate::{
     parameters::light::{
         MAX_EPOCHS_TO_SEND, MAX_HEADERS_TO_SEND, MAX_TXS_TO_SEND,
     },
-    sync::SynchronizationGraph,
+    sync::{message::Throttled, SynchronizationGraph},
     TransactionPool,
 };
+use rand::prelude::SliceRandom;
+use throttling::token_bucket::{ThrottleResult, TokenBucketManager};
 
 pub struct Provider {
     // shared consensus graph
@@ -64,12 +65,15 @@ pub struct Provider {
 
     // shared transaction pool
     tx_pool: Arc<TransactionPool>,
+
+    throttling_config_file: Option<String>,
 }
 
 impl Provider {
     pub fn new(
         consensus: Arc<ConsensusGraph>, graph: Arc<SynchronizationGraph>,
         network: Weak<NetworkService>, tx_pool: Arc<TransactionPool>,
+        throttling_config_file: Option<String>,
     ) -> Self
     {
         let ledger = LedgerInfo::new(consensus.clone());
@@ -82,6 +86,7 @@ impl Provider {
             network,
             peers,
             tx_pool,
+            throttling_config_file,
         }
     }
 
@@ -216,6 +221,7 @@ impl Provider {
             .collect();
 
         Some(TxInfo {
+            tx_hash: hash,
             epoch,
             block_hash,
             index,
@@ -228,7 +234,7 @@ impl Provider {
         &self, io: &dyn NetworkContext, peer: PeerId,
     ) -> Result<(), Error> {
         let best_info = self.consensus.get_best_info();
-        let genesis_hash = self.consensus.data_man.true_genesis_block.hash();
+        let genesis_hash = self.consensus.data_man.true_genesis.hash();
 
         let terminals = match &best_info.terminal_block_hashes {
             Some(x) => x.clone(),
@@ -257,7 +263,7 @@ impl Provider {
 
     #[inline]
     fn validate_genesis_hash(&self, genesis: H256) -> Result<(), Error> {
-        match self.consensus.data_man.true_genesis_block.hash() {
+        match self.consensus.data_man.true_genesis.hash() {
             h if h == genesis => Ok(()),
             h => {
                 debug!(
@@ -274,6 +280,7 @@ impl Provider {
     ) -> Result<(), Error> {
         let status: StatusPing = rlp.as_val()?;
         info!("on_status peer={:?} status={:?}", peer, status);
+        self.throttle(&peer, &status)?;
 
         self.validate_peer_type(&status.node_type)?;
         self.validate_genesis_hash(status.genesis_hash)?;
@@ -295,6 +302,7 @@ impl Provider {
     ) -> Result<(), Error> {
         let req: GetStateRoots = rlp.as_val()?;
         info!("on_get_state_roots req={:?}", req);
+        self.throttle(&peer, &req)?;
         let request_id = req.request_id;
 
         let state_roots = req
@@ -319,6 +327,7 @@ impl Provider {
     ) -> Result<(), Error> {
         let req: GetStateEntries = rlp.as_val()?;
         info!("on_get_state_entries req={:?}", req);
+        self.throttle(&peer, &req)?;
         let request_id = req.request_id;
 
         let entries = req
@@ -347,6 +356,7 @@ impl Provider {
     ) -> Result<(), Error> {
         let req: GetBlockHashesByEpoch = rlp.as_val()?;
         info!("on_get_block_hashes_by_epoch req={:?}", req);
+        self.throttle(&peer, &req)?;
         let request_id = req.request_id;
 
         let hashes = req
@@ -371,6 +381,7 @@ impl Provider {
     ) -> Result<(), Error> {
         let req: GetBlockHeaders = rlp.as_val()?;
         info!("on_get_block_headers req={:?}", req);
+        self.throttle(&peer, &req)?;
         let request_id = req.request_id;
 
         let headers = req
@@ -395,10 +406,11 @@ impl Provider {
     }
 
     fn on_send_raw_tx(
-        &self, _io: &dyn NetworkContext, _peer: PeerId, rlp: &Rlp,
+        &self, _io: &dyn NetworkContext, peer: PeerId, rlp: &Rlp,
     ) -> Result<(), Error> {
         let req: SendRawTx = rlp.as_val()?;
         info!("on_send_raw_tx req={:?}", req);
+        self.throttle(&peer, &req)?;
         let tx: TransactionWithSignature = rlp::decode(&req.raw)?;
 
         let (passed, failed) = self.tx_pool.insert_new_transactions(vec![tx]);
@@ -434,6 +446,7 @@ impl Provider {
     ) -> Result<(), Error> {
         let req: GetReceipts = rlp.as_val()?;
         info!("on_get_receipts req={:?}", req);
+        self.throttle(&peer, &req)?;
         let request_id = req.request_id;
 
         let receipts = req
@@ -458,6 +471,7 @@ impl Provider {
     ) -> Result<(), Error> {
         let req: GetTxs = rlp.as_val()?;
         info!("on_get_txs req={:?}", req);
+        self.throttle(&peer, &req)?;
         let request_id = req.request_id;
 
         let txs = req
@@ -479,6 +493,7 @@ impl Provider {
     ) -> Result<(), Error> {
         let req: GetWitnessInfo = rlp.as_val()?;
         info!("on_get_witness_info req={:?}", req);
+        self.throttle(&peer, &req)?;
         let request_id = req.request_id;
 
         let infos = req
@@ -499,6 +514,7 @@ impl Provider {
     ) -> Result<(), Error> {
         let req: GetBlooms = rlp.as_val()?;
         info!("on_get_blooms req={:?}", req);
+        self.throttle(&peer, &req)?;
         let request_id = req.request_id;
 
         let blooms = req
@@ -521,6 +537,7 @@ impl Provider {
     ) -> Result<(), Error> {
         let req: GetBlockTxs = rlp.as_val()?;
         info!("on_get_block_txs req={:?}", req);
+        self.throttle(&peer, &req)?;
         let request_id = req.request_id;
 
         let block_txs = req
@@ -556,6 +573,7 @@ impl Provider {
     ) -> Result<(), Error> {
         let req: GetTxInfos = rlp.as_val()?;
         info!("on_get_tx_infos req={:?}", req);
+        self.throttle(&peer, &req)?;
         let request_id = req.request_id;
 
         // TODO(thegaram): consider merging overlapping tx infos
@@ -577,7 +595,7 @@ impl Provider {
         msg: &dyn Message,
     ) -> Result<(), Error>
     {
-        info!("broadcast peers={:?}", peers);
+        debug!("broadcast peers={:?}", peers);
 
         let throttle_ratio = THROTTLING_SERVICE.read().get_throttling_ratio();
         let total = peers.len();
@@ -588,7 +606,7 @@ impl Provider {
                 "Apply throttling for broadcast, total: {}, allowed: {}",
                 total, allowed
             );
-            rand::thread_rng().shuffle(&mut peers);
+            peers.shuffle(&mut rand::thread_rng());
             peers.truncate(allowed);
         }
 
@@ -600,7 +618,7 @@ impl Provider {
     }
 
     pub fn relay_hashes(&self, hashes: Vec<H256>) -> Result<(), Error> {
-        info!("relay_hashes hashes={:?}", hashes);
+        debug!("relay_hashes hashes={:?}", hashes);
 
         if hashes.is_empty() {
             return Ok(());
@@ -626,6 +644,36 @@ impl Provider {
         };
 
         Ok(())
+    }
+
+    fn throttle<T: Message>(
+        &self, peer: &PeerId, msg: &T,
+    ) -> Result<(), Error> {
+        let peer = self.get_existing_peer_state(peer)?;
+
+        let bucket_name = msg.msg_name().to_string();
+        let bucket = match peer.read().throttling.get(&bucket_name) {
+            Some(bucket) => bucket,
+            None => return Ok(()),
+        };
+
+        let result = bucket.lock().throttle();
+
+        match result {
+            ThrottleResult::Success => Ok(()),
+            ThrottleResult::Throttled(wait_time) => {
+                let throttled = Throttled {
+                    msg_id: msg.msg_id(),
+                    wait_time_nanos: wait_time.as_nanos() as u64,
+                    request_id: msg.get_request_id(),
+                };
+
+                Err(ErrorKind::Throttled(msg.msg_name(), throttled).into())
+            }
+            ThrottleResult::AlreadyThrottled => {
+                Err(ErrorKind::AlreadyThrottled(msg.msg_name()).into())
+            }
+        }
     }
 }
 
@@ -659,6 +707,13 @@ impl NetworkProtocolHandler for Provider {
 
         // insert handshaking peer, wait for StatusPing
         self.peers.insert(peer);
+
+        if let Some(ref file) = self.throttling_config_file {
+            let peer = self.peers.get(&peer).expect("peer not found");
+            peer.write().throttling =
+                TokenBucketManager::load(file, Some("light_protocol"))
+                    .expect("invalid throttling configuration file");
+        }
     }
 
     fn on_peer_disconnected(&self, _io: &dyn NetworkContext, peer: PeerId) {

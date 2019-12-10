@@ -202,27 +202,23 @@ class BlockHeader(rlp.Serializable):
         ("gas_limit", big_endian_int),
         ("referee_hashes", CountableList(binary)),
         ("nonce", big_endian_int),
-        ("state_root_with_aux_info", CountableList(CountableList(binary))),
     ]
 
-    def __init__(
-            self,
-            parent_hash=default_config["GENESIS_PREVHASH"],
-            height=0,
-            timestamp=0,
-            author=default_config["GENESIS_COINBASE"],
-            transactions_root=trie.BLANK_ROOT,
-            deferred_state_root=sha3(rlp.encode(trie.state_root())),
-            deferred_receipts_root=trie.BLANK_ROOT,
-            deferred_logs_bloom_hash=default_config["GENESIS_LOGS_BLOOM_HASH"],
-            blame=0,
-            difficulty=default_config["GENESIS_DIFFICULTY"],
-            gas_limit=0,
-            referee_hashes=[],
-            adaptive=0,
-            nonce=0,
-            state_root_with_aux_info=[trie.state_root(), [trie.NULL_ROOT, trie.NULL_ROOT]],
-    ):
+    def __init__(self,
+                 parent_hash=default_config['GENESIS_PREVHASH'],
+                 height=0,
+                 timestamp=0,
+                 author=default_config['GENESIS_COINBASE'],
+                 transactions_root=trie.BLANK_ROOT,
+                 deferred_state_root=sha3(rlp.encode(trie.state_root())),
+                 deferred_receipts_root=trie.BLANK_ROOT,
+                 deferred_logs_bloom_hash=default_config['GENESIS_LOGS_BLOOM_HASH'],
+                 blame=0,
+                 difficulty=default_config['GENESIS_DIFFICULTY'],
+                 gas_limit=0,
+                 referee_hashes=[],
+                 adaptive=0,
+                 nonce=0):
         # at the beginning of a method, locals() is a dict of all arguments
         fields = {k: v for k, v in locals().items() if k not in ["self", "__class__"]}
         self.block = None
@@ -260,7 +256,7 @@ class BlockHeaderRlpPart(rlp.Serializable):
     fields = [
         (field, sedes)
         for field, sedes in BlockHeader._meta.fields
-        if field not in ["state_root_with_aux_info"]
+
     ]
 
 
@@ -268,7 +264,7 @@ class BlockHeaderWithoutNonce(rlp.Serializable):
     fields = [
         (field, sedes)
         for field, sedes in BlockHeader._meta.fields
-        if field not in ["state_root_with_aux_info", "nonce"]
+        if field not in ["nonce"]
     ]
 
 

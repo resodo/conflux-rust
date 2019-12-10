@@ -56,6 +56,7 @@ const NODE_TABLE: TimerToken = SYS_TIMER + 7;
 const SEND_DELAYED_MESSAGES: TimerToken = SYS_TIMER + 8;
 const CHECK_SESSIONS: TimerToken = SYS_TIMER + 9;
 const HANDLER_TIMER: TimerToken = LAST_SESSION + 256;
+const STOP_NET_POLL: TimerToken = HANDLER_TIMER + 1;
 
 pub const DEFAULT_HOUSEKEEPING_TIMEOUT: Duration = Duration::from_secs(1);
 // for DISCOVERY_REFRESH TimerToken
@@ -180,6 +181,7 @@ impl NetworkService {
                 handler,
                 main_event_loop_channel,
                 MAX_SESSIONS,
+                STOP_NET_POLL,
             );
         Ok(())
     }
@@ -315,7 +317,7 @@ impl NetworkService {
             &io,
             true,
             op,
-            Some(DisconnectReason::DisconnectRequested),
+            "disconnect requested", // reason
         );
         Some(peer)
     }
@@ -413,7 +415,7 @@ impl DelayedQueue {
                     &context.io,
                     true,
                     Some(UpdateNodeOperation::Failure),
-                    None,
+                    "failed to send delayed message", // reason
                 );
             }
         };
@@ -601,7 +603,7 @@ impl NetworkServiceInner {
             Ok(n) => {
                 self.node_db.write().insert_trusted(NodeEntry {
                     id: n.id,
-                    endpoint: n.endpoint.clone(),
+                    endpoint: n.endpoint,
                 });
             }
         }
@@ -795,7 +797,7 @@ impl NetworkServiceInner {
                 io,
                 true,
                 Some(UpdateNodeOperation::Failure),
-                None,
+                "peer dropped in manual", // reason
             );
         }
         w.clear();
@@ -926,7 +928,7 @@ impl NetworkServiceInner {
             io,
             true,
             Some(UpdateNodeOperation::Failure),
-            None,
+            "connection closed", // reason
         );
     }
 
@@ -985,7 +987,7 @@ impl NetworkServiceInner {
                 io,
                 true,
                 Some(UpdateNodeOperation::Failure),
-                None,
+                "session readable error", // reason
             );
         }
 
@@ -1060,8 +1062,7 @@ impl NetworkServiceInner {
 
     fn kill_connection(
         &self, token: StreamToken, io: &IoContext<NetworkIoMessage>,
-        remote: bool, op: Option<UpdateNodeOperation>,
-        reason: Option<DisconnectReason>,
+        remote: bool, op: Option<UpdateNodeOperation>, reason: &str,
     )
     {
         let mut to_disconnect: Vec<ProtocolId> = Vec::new();
@@ -1076,10 +1077,9 @@ impl NetworkServiceInner {
                         for (p, _) in self.handlers.read().iter() {
                             if sess.have_capability(*p) {
                                 to_disconnect.push(*p);
-
-                                if let Some(ref reason) = reason {
-                                    sess.send_disconnect(reason.clone());
-                                };
+                                sess.send_disconnect(DisconnectReason::Custom(
+                                    reason.into(),
+                                ));
                             }
                         }
                     }
@@ -1088,7 +1088,7 @@ impl NetworkServiceInner {
                 deregister = remote || sess.done();
                 failure_id = sess.id().cloned();
                 debug!(
-                    "kill connection, deregister = {}, resson = {:?}, session = {:?}",
+                    "kill connection, deregister = {}, reason = {:?}, session = {:?}",
                     deregister, reason, *sess
                 );
             }
@@ -1214,7 +1214,7 @@ impl NetworkServiceInner {
     fn on_udp_packet(
         &self, packet: &[u8], from: SocketAddr,
     ) -> Result<(), Error> {
-        if packet.len() == 0 {
+        if packet.is_empty() {
             return Ok(());
         }
 
@@ -1252,7 +1252,13 @@ impl NetworkServiceInner {
         }
 
         for (token, op) in disconnect_peers {
-            self.kill_connection(token, io, true, op, None);
+            self.kill_connection(
+                token,
+                io,
+                true,
+                op,
+                "session timeout", // reason
+            );
         }
     }
 }
@@ -1307,7 +1313,7 @@ impl IoHandler<NetworkIoMessage> for NetworkServiceInner {
                     io,
                     true,
                     Some(UpdateNodeOperation::Demotion),
-                    Some(DisconnectReason::Custom("session timeout".into())),
+                    "handshake timeout", // reason
                 );
             }
             HOUSEKEEPING => self.on_housekeeping(io),
@@ -1354,12 +1360,12 @@ impl IoHandler<NetworkIoMessage> for NetworkServiceInner {
                 }
             }
             DISCOVERY_ROUND => {
-                self.discovery.lock().as_mut().map(|d| {
+                if let Some(d) = self.discovery.lock().as_mut() {
                     d.round(&UdpIoContext::new(
                         &self.udp_channel,
                         &self.node_db,
                     ))
-                });
+                }
                 io.update_registration(UDP_MESSAGE).unwrap_or_else(|e| {
                     debug!("Error updating discovery registration: {:?}", e)
                 });
@@ -1667,17 +1673,13 @@ impl<'a> NetworkContextTrait for NetworkContext<'a> {
         trace!("Sending {} bytes to {}", msg.len(), peer);
         if let Some(session) = session {
             let latency =
-                self.network_service
-                    .delayed_queue
-                    .as_ref()
-                    .map_or(None, |q| {
-                        session.write().metadata.id.map_or(None, |id| {
-                            q.latencies
-                                .read()
-                                .get(&id)
-                                .map(|latency| latency.clone())
-                        })
-                    });
+                self.network_service.delayed_queue.as_ref().and_then(|q| {
+                    session
+                        .write()
+                        .metadata
+                        .id
+                        .and_then(|id| q.latencies.read().get(&id).copied())
+                });
             match latency {
                 Some(latency) => {
                     let q =
@@ -1688,7 +1690,7 @@ impl<'a> NetworkContextTrait for NetworkContext<'a> {
                         ts_to_send,
                         self.io.clone(),
                         self.protocol,
-                        session.clone(),
+                        session,
                         peer,
                         msg,
                         priority,
@@ -1715,11 +1717,8 @@ impl<'a> NetworkContextTrait for NetworkContext<'a> {
     }
 
     fn disconnect_peer(
-        &self, peer: PeerId, op: Option<UpdateNodeOperation>,
-        reason: Option<&'static str>,
-    )
-    {
-        let reason = reason.map(|r| DisconnectReason::Custom(r.into()));
+        &self, peer: PeerId, op: Option<UpdateNodeOperation>, reason: &str,
+    ) {
         self.network_service
             .kill_connection(peer, self.io, true, op, reason);
     }

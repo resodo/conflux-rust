@@ -9,22 +9,23 @@ use cfxcore::{
     machine::new_machine_with_builtin,
     state::State,
     statedb::StateDb,
-    storage::state_manager::{SnapshotAndEpochIdRef, StateManagerTrait},
+    storage::state_manager::{StateIndex, StateManagerTrait},
     vm::{Env, Spec},
     vm_factory::VmFactory,
 };
 use client::{archive::ArchiveClient, configuration::Configuration};
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Benchmark, Criterion};
 use ethkey::{Generator, KeyPair, Random};
 use parking_lot::{Condvar, Mutex};
 use primitives::{Action, Transaction};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
+#[allow(dead_code)]
 fn txgen_benchmark(c: &mut Criterion) {
     let mut conf = Configuration::default();
-    conf.raw_conf.test_mode = true;
+    conf.raw_conf.mode = Some("test".to_owned());
     let exit = Arc::new((Mutex::new(false), Condvar::new()));
-    let handler = ArchiveClient::start(conf, exit.clone()).unwrap();
+    let handler = ArchiveClient::start(conf, exit).unwrap();
     c.bench_function("Randomly generate 1 transaction", move |b| {
         b.iter(|| {
             handler.txgen.generate_transaction();
@@ -34,9 +35,9 @@ fn txgen_benchmark(c: &mut Criterion) {
 
 fn txexe_benchmark(c: &mut Criterion) {
     let mut conf = Configuration::default();
-    conf.raw_conf.test_mode = true;
+    conf.raw_conf.mode = Some("test".to_owned());
     let exit = Arc::new((Mutex::new(false), Condvar::new()));
-    let handler = ArchiveClient::start(conf, exit.clone()).unwrap();
+    let handler = ArchiveClient::start(conf, exit).unwrap();
     let kp = KeyPair::from_secret(
         "46b9e861b63d3509c88b7817275a30d22d62c8cd8fa6486ddee35ef0d8e0495f"
             .parse()
@@ -65,39 +66,44 @@ fn txexe_benchmark(c: &mut Criterion) {
         last_hashes: Arc::new(vec![]),
     };
     let spec = Spec::new_spec();
-    c.bench_function("Execute 1 transaction", move |b| {
-        let mut state = State::new(
-            StateDb::new(
-                handler
-                    .consensus
-                    .data_man
-                    .storage_manager
-                    .get_state_for_next_epoch(
-                        // FIXME: delta height
-                        SnapshotAndEpochIdRef::new(
-                            &handler.consensus.best_block_hash(),
-                            None,
-                        ),
-                    )
-                    .unwrap()
-                    .unwrap(),
-            ),
-            0.into(),
-            VmFactory::new(1024 * 32),
-        );
-        let mut ex = Executive::new(&mut state, &env, &machine, &spec);
-        let mut nonce_increased = false;
-        b.iter(|| {
-            ex.transact(
+    c.bench(
+        "Execute 1 transaction",
+        Benchmark::new("Execute 1 transaction", move |b| {
+            let mut state = State::new(
+                StateDb::new(
+                    handler
+                        .consensus
+                        .data_man
+                        .storage_manager
+                        .get_state_for_next_epoch(
+                            // FIXME: delta height
+                            StateIndex::new_for_test_only_delta_mpt(
+                                &handler.consensus.best_block_hash(),
+                            ),
+                        )
+                        .unwrap()
+                        .unwrap(),
+                ),
+                0.into(), /* account_start_nonce */
+                VmFactory::new(1024 * 32),
+            );
+            let mut ex = Executive::new(&mut state, &env, &machine, &spec);
+            let mut nonce_increased = false;
+            b.iter(|| {
+                //ex.transact(
                 &tx,
-                &mut nonce_increased,
+                &mut nonce_increased);
+                ex.transact(&tx, &mut nonce_increased,
                 false, /* eth_compatibility_mode */
             )
             .unwrap();
-            ex.state.clear();
+                ex.state.clear();
+            })
         })
-    });
+        .measurement_time(Duration::from_secs(10))
+        .warm_up_time(Duration::from_secs(10)),
+    );
 }
 
-criterion_group!(benches, txgen_benchmark, txexe_benchmark);
+criterion_group!(benches, txexe_benchmark);
 criterion_main!(benches);

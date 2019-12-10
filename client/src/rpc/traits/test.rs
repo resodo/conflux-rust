@@ -12,7 +12,7 @@ use jsonrpc_derive::rpc;
 use network::node_table::NodeId;
 use std::net::SocketAddr;
 
-#[rpc]
+#[rpc(server)]
 pub trait TestRpc {
     #[rpc(name = "sayhello")]
     fn say_hello(&self) -> RpcResult<String>;
@@ -78,7 +78,7 @@ pub trait TestRpc {
 
     #[rpc(name = "test_generateblockwithfaketxs")]
     fn generate_block_with_fake_txs(
-        &self, raw: Bytes, tx_data_len: Option<usize>,
+        &self, raw: Bytes, adaptive: Option<bool>, tx_data_len: Option<usize>,
     ) -> RpcResult<H256>;
 
     #[rpc(name = "test_generateblockwithblameinfo")]
@@ -89,7 +89,7 @@ pub trait TestRpc {
     #[rpc(name = "test_generate_block_with_nonce_and_timestamp")]
     fn generate_block_with_nonce_and_timestamp(
         &self, parent: H256, referees: Vec<H256>, raw: Bytes, nonce: u64,
-        timestamp: u64,
+        timestamp: u64, adaptive: bool,
     ) -> RpcResult<H256>;
 
     #[rpc(name = "gettransactionreceipt")]

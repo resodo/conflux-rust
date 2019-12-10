@@ -32,7 +32,7 @@ pub struct CheckpointDumpManager {
 }
 
 impl CheckpointDumpManager {
-    const MAX_CHUNK_SIZE: usize = 4 * 1024 * 1024;
+    pub const MAX_CHUNK_SIZE: usize = 4 * 1024 * 1024;
 
     pub fn initialize(&mut self, state_manager: Arc<StateManager>) {
         if self.checkpoint_dump_sender.lock().is_some() {
@@ -113,10 +113,15 @@ impl CheckpointDumpManager {
         }
 
         let maybe_sender = self.checkpoint_dump_sender.lock();
-        let sender = maybe_sender.as_ref().expect("uninitialized");
 
-        if let Err(e) = sender.send(checkpoint) {
-            warn!("failed to dump checkpoint async, error = {:?}", e);
+        if let Some(ref sender) = *maybe_sender {
+            if let Err(e) = sender.send(checkpoint) {
+                warn!("failed to dump checkpoint async, error = {:?}", e);
+            }
+        } else {
+            // TODO Handle possible inconsistency for skipped or cancelled state
+            // dumping
+            debug!("Skip checkpoint dumping during shutdown");
         }
     }
 
@@ -128,4 +133,6 @@ impl CheckpointDumpManager {
             Some(*checkpoint)
         }
     }
+
+    pub fn stop(&self) { *self.checkpoint_dump_sender.lock() = None; }
 }
