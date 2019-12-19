@@ -188,6 +188,7 @@ class ConfluxEthReplayTest(ConfluxTestFramework):
 
         time.sleep(self.INITIAL_SLEEP)
 
+        self.log.info(self.options.tmpdir)
         self.log.info("Experiment started")
         start_time = datetime.datetime.now()
         last_log_elapsed_time = 0

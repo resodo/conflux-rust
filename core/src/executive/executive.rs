@@ -164,7 +164,7 @@ impl<'a> CallCreateExecutive<'a> {
             == Address::from_str(STORAGE_INTEREST_STAKING_CONTRACT_ADDRESS)
                 .unwrap()
         {
-            info!("CallInternalContract: {:?}", params.data);
+            trace!("CallInternalContract: {:?}", params.data);
             CallCreateExecutiveKind::CallInternalContract(params)
         } else {
             if params.code.is_some() {

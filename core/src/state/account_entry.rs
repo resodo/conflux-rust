@@ -276,6 +276,7 @@ impl OverlayAccount {
 
     pub fn clone_dirty(&self) -> Self {
         let mut account = self.clone_basic();
+        account.storage_cache = self.storage_cache.clone();
         account.storage_changes = self.storage_changes.clone();
         account.ownership_cache = self.ownership_cache.clone();
         account.ownership_changes = self.ownership_changes.clone();
